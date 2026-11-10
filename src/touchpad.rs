@@ -1,5 +1,6 @@
 //! Descriptor-driven Precision Touchpad input. No fixed report byte offsets.
 #![allow(unsafe_op_in_unsafe_fn)]
+use crate::motion::{Effect, Mode, Motion, Tuning};
 use std::{
     collections::{HashMap, HashSet},
     mem::{offset_of, size_of},
@@ -22,6 +23,7 @@ struct Gate {
     side: f64,
     top: f64,
     grace: std::time::Duration,
+    continuing: bool,
 }
 impl Gate {
     fn new(side: f64, top: f64, ms: u64) -> Self {
@@ -31,6 +33,7 @@ impl Gate {
             side: side / 100.0,
             top: top / 100.0,
             grace: std::time::Duration::from_millis(ms),
+            continuing: false,
         }
     }
     fn sample(&mut self, id: u32, point: Point, down: bool, now: Instant) {
@@ -39,6 +42,7 @@ impl Gate {
             return;
         }
         if let Some(c) = self.contacts.get_mut(&id) {
+            c.accepted |= self.continuing;
             // Ignore tiny sensor jitter; only accepted gestures can extend the grace.
             if c.accepted
                 && ((c.point.x - point.x).abs() > 0.0005 || (c.point.y - point.y).abs() > 0.0005)
@@ -56,13 +60,20 @@ impl Gate {
                 id,
                 Contact {
                     point,
-                    accepted: interior || recent,
+                    accepted: interior || recent || self.continuing,
                 },
             );
         }
     }
     fn touching(&self) -> bool {
         self.contacts.values().any(|c| c.accepted)
+    }
+    fn primary(&self) -> Option<(u32, f64, f64)> {
+        self.contacts
+            .iter()
+            .filter(|(_, c)| c.accepted)
+            .min_by_key(|(id, _)| **id)
+            .map(|(id, c)| (*id, c.point.x, c.point.y))
     }
 }
 struct Finger {
@@ -93,9 +104,9 @@ impl Frame {
     fn remaining(&self) -> usize {
         self.expected.saturating_sub(self.samples.len())
     }
-    fn commit(&mut self, gate: &mut Gate, now: Instant) {
+    fn commit(&mut self, gate: &mut Gate, now: Instant) -> bool {
         if self.remaining() != 0 {
-            return;
+            return false;
         }
         // Only a complete frame may remove contacts, including serial/hybrid reports.
         let live: HashSet<_> = self
@@ -110,6 +121,7 @@ impl Frame {
         }
         self.expected = 0;
         self.samples.clear();
+        true
     }
 }
 struct Device {
@@ -122,6 +134,7 @@ struct Device {
     count_link: u16,
     count_report: u8,
     frame: Frame,
+    motion: Motion,
 }
 impl Device {
     unsafe fn open(
@@ -237,16 +250,17 @@ impl Device {
             count_link,
             count_report,
             frame: Frame::default(),
+            motion: Motion::default(),
         })
     }
-    unsafe fn report(&mut self, report: &mut [u8]) {
+    unsafe fn report(&mut self, report: &mut [u8]) -> bool {
         if report.is_empty() {
-            return;
+            return false;
         }
         let pp = PHIDP_PREPARSED_DATA(self.prep.as_ptr() as isize);
         self.reports += 1;
         if self.count_report != 0 && report[0] != self.count_report {
-            return;
+            return false;
         }
         let mut total = 0;
         if HidP_GetUsageValue(
@@ -263,7 +277,7 @@ impl Device {
             self.errors += 1;
             self.gate.contacts.clear();
             self.frame = Frame::default();
-            return;
+            return false;
         }
         self.frame.start(total as usize);
         let slots = self.frame.remaining();
@@ -289,7 +303,7 @@ impl Device {
                 self.errors += 1;
                 self.gate.contacts.clear();
                 self.frame = Frame::default();
-                return;
+                return false;
             }
             let usages = &usages[..(count as usize).min(usages.len())];
             let down = usages.contains(&0x42) && (!finger.confidence || usages.contains(&0x47));
@@ -307,7 +321,7 @@ impl Device {
                 self.errors += 1;
                 self.gate.contacts.clear();
                 self.frame = Frame::default();
-                return;
+                return false;
             }
             let mut x = 0;
             let mut y = 0;
@@ -327,7 +341,7 @@ impl Device {
                 self.errors += 1;
                 self.gate.contacts.clear();
                 self.frame = Frame::default();
-                return;
+                return false;
             }
             let norm = |v: u32, cap: &HIDP_VALUE_CAPS| {
                 ((v as f64 - cap.LogicalMin as f64)
@@ -346,7 +360,7 @@ impl Device {
         if slots > 0 && self.frame.samples.is_empty() {
             self.errors += 1;
         }
-        self.frame.commit(&mut self.gate, Instant::now());
+        self.frame.commit(&mut self.gate, Instant::now())
     }
 }
 pub struct Devices {
@@ -398,13 +412,25 @@ impl Devices {
                 .flatten()
                 .any(|d| !d.gate.contacts.is_empty())
     }
-    pub unsafe fn input(&mut self, handle: HRAWINPUT) {
+    pub fn has_contacts(&self) -> bool {
+        self.devices
+            .values()
+            .flatten()
+            .any(|d| !d.gate.contacts.is_empty())
+    }
+    pub unsafe fn input(
+        &mut self,
+        handle: HRAWINPUT,
+        mode: Mode,
+        epoch: u64,
+        tuning: Tuning,
+    ) -> Vec<Effect> {
         let mut bytes = 0;
         let header = size_of::<RAWINPUTHEADER>() as u32;
         if GetRawInputData(handle, RID_INPUT, None, &mut bytes, header) == u32::MAX
             || bytes < (offset_of!(RAWINPUT, data) + offset_of!(RAWHID, bRawData)) as u32
         {
-            return;
+            return Vec::new();
         }
         let mut buffer = vec![0usize; (bytes as usize).div_ceil(size_of::<usize>())];
         if GetRawInputData(
@@ -415,11 +441,11 @@ impl Devices {
             header,
         ) == u32::MAX
         {
-            return;
+            return Vec::new();
         }
         let raw = &*(buffer.as_ptr() as *const RAWINPUT);
         if raw.header.dwType != RIM_TYPEHID.0 {
-            return;
+            return Vec::new();
         }
         let key = raw.header.hDevice.0 as usize;
         let entry = self
@@ -427,7 +453,7 @@ impl Devices {
             .entry(key)
             .or_insert_with(|| Device::open(raw.header.hDevice, self.side, self.top, self.ms));
         let Some(device) = entry else {
-            return;
+            return Vec::new();
         };
         let size = raw.data.hid.dwSizeHid as usize;
         let count = raw.data.hid.dwCount as usize;
@@ -438,15 +464,24 @@ impl Devices {
                 .and_then(|n| n.checked_add(offset))
                 .is_none_or(|n| n > bytes as usize)
         {
-            return;
+            return Vec::new();
         }
         let reports = std::slice::from_raw_parts_mut(
             (buffer.as_mut_ptr() as *mut u8).add(offset),
             size * count,
         );
+        let mut effects = Vec::new();
+        device.gate.continuing = mode != Mode::Off;
         for report in reports.chunks_exact_mut(size) {
-            device.report(report);
+            if device.report(report)
+                && let Some(effect) = device
+                    .motion
+                    .feed(mode, epoch, device.gate.primary(), tuning)
+            {
+                effects.push(effect);
+            }
         }
+        effects
     }
     pub fn summary(&self) -> String {
         let devices: Vec<_> = self.devices.values().flatten().collect();
@@ -478,6 +513,60 @@ mod tests {
     use std::time::Duration;
     fn p(x: f64, y: f64) -> Point {
         Point { x, y }
+    }
+    #[test]
+    fn held_f_resumes_at_edges_after_multiple_long_clutches() {
+        use crate::engine::{Action, Button, Engine};
+        let mut e = Engine::default();
+        let mut g = Gate::new(12.0, 15.0, 500);
+        let mut motion = Motion::default();
+        let tuning = Tuning {
+            drag_x: 1000.0,
+            drag_y: 1000.0,
+            wheel: 2400.0,
+            invert: false,
+        };
+        let t = Instant::now();
+        g.sample(1, p(0.5, 0.5), true, t);
+        assert_eq!(
+            e.key(0, true, g.touching()).1,
+            Some(Action {
+                button: Button::Left,
+                down: true
+            })
+        );
+        for id in 1..4 {
+            g.continuing = e.dragging();
+            g.sample(
+                id,
+                p(0.02, 0.02),
+                true,
+                t + Duration::from_secs(id as u64 * 3),
+            );
+            assert!(g.touching());
+            assert_eq!(motion.feed(Mode::Drag, 1, g.primary(), tuning), None);
+            g.sample(
+                id,
+                p(0.03, 0.02),
+                true,
+                t + Duration::from_secs(id as u64 * 3),
+            );
+            assert_eq!(
+                motion.feed(Mode::Drag, 1, g.primary(), tuning),
+                Some(Effect::Move { dx: 10, dy: 0 })
+            );
+            g.sample(id, p(0.03, 0.02), false, t);
+            assert_eq!(motion.feed(Mode::Drag, 1, g.primary(), tuning), None);
+            assert_eq!(e.key(0, true, false), (true, None));
+        }
+        assert_eq!(
+            e.key(0, false, false).1,
+            Some(Action {
+                button: Button::Left,
+                down: false
+            })
+        );
+        assert!(!e.dragging());
     }
     #[test]
     fn hybrid_frame_preserves_contacts_until_all_packets_arrive() {

@@ -1,0 +1,139 @@
+//! Converts complete HID frames into drag/wheel deltas; a lift is a new baseline.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    #[default]
+    Off,
+    Drag,
+    Scroll,
+}
+#[derive(Clone, Copy)]
+pub struct Tuning {
+    pub drag_x: f64,
+    pub drag_y: f64,
+    pub wheel: f64,
+    pub invert: bool,
+}
+#[derive(Debug, PartialEq, Eq)]
+pub enum Effect {
+    Move { dx: i32, dy: i32 },
+    Wheel(i32),
+}
+#[derive(Default)]
+pub struct Motion {
+    mode: Mode,
+    epoch: u64,
+    previous: Option<(u32, f64, f64)>,
+    remainder: [f64; 2],
+}
+impl Motion {
+    pub fn feed(
+        &mut self,
+        mode: Mode,
+        epoch: u64,
+        point: Option<(u32, f64, f64)>,
+        tuning: Tuning,
+    ) -> Option<Effect> {
+        let old = self.previous;
+        let changed = self.mode != mode || self.epoch != epoch;
+        self.mode = mode;
+        self.epoch = epoch;
+        self.previous = point;
+        if mode == Mode::Off
+            || changed
+            || old.is_none()
+            || point.is_none()
+            || old.unwrap().0 != point.unwrap().0
+        {
+            self.remainder = [0.0; 2];
+            return None;
+        }
+        let (_, x, y) = point.unwrap();
+        let (_, ox, oy) = old.unwrap();
+        match mode {
+            Mode::Off => None,
+            Mode::Drag => {
+                self.remainder[0] += (x - ox) * tuning.drag_x;
+                self.remainder[1] += (y - oy) * tuning.drag_y;
+                let dx = self.remainder[0].round() as i32;
+                let dy = self.remainder[1].round() as i32;
+                self.remainder[0] -= dx as f64;
+                self.remainder[1] -= dy as f64;
+                (dx != 0 || dy != 0).then_some(Effect::Move { dx, dy })
+            }
+            Mode::Scroll => {
+                self.remainder[1] +=
+                    (y - oy) * tuning.wheel * if tuning.invert { 1.0 } else { -1.0 };
+                let delta = self.remainder[1].round() as i32;
+                self.remainder[1] -= delta as f64;
+                (delta != 0).then_some(Effect::Wheel(delta))
+            }
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn t() -> Tuning {
+        Tuning {
+            drag_x: 1000.0,
+            drag_y: 1000.0,
+            wheel: 2400.0,
+            invert: false,
+        }
+    }
+    #[test]
+    fn repeated_clutches_rebase_without_jumps() {
+        let mut m = Motion::default();
+        for id in 0..3 {
+            assert_eq!(m.feed(Mode::Drag, 1, Some((id, 0.2, 0.5)), t()), None);
+            assert_eq!(
+                m.feed(Mode::Drag, 1, Some((id, 0.3, 0.5)), t()),
+                Some(Effect::Move { dx: 100, dy: 0 })
+            );
+            assert_eq!(m.feed(Mode::Drag, 1, None, t()), None);
+        }
+    }
+    #[test]
+    fn scroll_is_vertical_signed_and_resets_on_recontact() {
+        let mut m = Motion::default();
+        m.feed(Mode::Scroll, 1, Some((1, 0.5, 0.5)), t());
+        assert_eq!(
+            m.feed(Mode::Scroll, 1, Some((1, 0.7, 0.55)), t()),
+            Some(Effect::Wheel(-120))
+        );
+        assert_eq!(
+            m.feed(Mode::Scroll, 1, Some((1, 0.7, 0.5)), t()),
+            Some(Effect::Wheel(120))
+        );
+        m.feed(Mode::Scroll, 1, None, t());
+        assert_eq!(m.feed(Mode::Scroll, 1, Some((2, 0.1, 0.1)), t()), None);
+    }
+    #[test]
+    fn key_release_new_gesture_and_contact_switch_do_not_jump() {
+        let mut m = Motion::default();
+        m.feed(Mode::Drag, 1, Some((1, 0.5, 0.5)), t());
+        assert_eq!(m.feed(Mode::Drag, 2, Some((1, 0.9, 0.9)), t()), None);
+        assert_eq!(m.feed(Mode::Scroll, 3, Some((1, 0.1, 0.1)), t()), None);
+        assert_eq!(m.feed(Mode::Scroll, 3, Some((2, 0.9, 0.9)), t()), None);
+        assert_eq!(m.feed(Mode::Off, 4, Some((2, 0.8, 0.8)), t()), None);
+    }
+    #[test]
+    fn fractional_deltas_accumulate_and_inversion_works() {
+        let mut m = Motion::default();
+        m.feed(Mode::Drag, 1, Some((1, 0.0, 0.0)), t());
+        assert_eq!(m.feed(Mode::Drag, 1, Some((1, 0.0002, 0.0)), t()), None);
+        assert_eq!(m.feed(Mode::Drag, 1, Some((1, 0.0004, 0.0)), t()), None);
+        assert_eq!(
+            m.feed(Mode::Drag, 1, Some((1, 0.0006, 0.0)), t()),
+            Some(Effect::Move { dx: 1, dy: 0 })
+        );
+        let mut s = Motion::default();
+        let mut tuning = t();
+        tuning.invert = true;
+        s.feed(Mode::Scroll, 1, Some((1, 0.5, 0.5)), tuning);
+        assert_eq!(
+            s.feed(Mode::Scroll, 1, Some((1, 0.5, 0.55)), tuning),
+            Some(Effect::Wheel(120))
+        );
+    }
+}

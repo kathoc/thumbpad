@@ -6,7 +6,7 @@ This is a prototype validation record, not a cross-device compatibility claim.
 
 - `cargo fmt --check`: passed.
 - `cargo clippy --locked --all-targets -- -D warnings`: passed.
-- `cargo test --locked`: 13 passed, 0 failed.
+- `cargo test --locked`: 20 passed, 0 failed (v0.1.1).
 - Optimized Windows x64 build: passed.
 - Inno Setup 6.7.4 installer compilation: passed.
 
@@ -16,6 +16,19 @@ motion, 499/501ms reconnection boundaries, no grace from rejected motion,
 serial/hybrid frame completion, empty frames, configuration bounds, update version
 selection, foreign download URL rejection, missing digest, and corrupted/truncated downloads.
 The mouse-hook regression test also invokes the callback while the UI state is borrowed.
+v0.1.1 adds repeated multi-second F-held clutches at excluded edges, D/K shared
+button ownership, G scroll ownership and pause, vertical wheel signs/inversion,
+fractional motion accumulation, and rebasing on lifts, contact changes and mode epochs.
+
+The user reported the initial implementation working, but drag resumption failing
+after a lift, and possibly added external-mouse latency. v0.1.1 routes held-key
+motion from HID, keeps the gesture accepted through clutches, and uses a dedicated
+mouse-hook thread with the hook fully detached while untouched or paused.
+Physical feel and latency of this revised path still need user verification.
+The v0.1.1 installer was applied to the default per-user installation: exit 0,
+installed executable matched the release build, and all previous settings were
+preserved while the new motion/scroll defaults were added. The running UI reported
+v0.1.1 and `Mouse hook: DETACHED (no mouse interception)` while idle.
 
 ## Native UI checks
 

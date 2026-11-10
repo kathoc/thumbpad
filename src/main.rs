@@ -1,10 +1,11 @@
 #![windows_subsystem = "windows"]
 #![allow(unsafe_op_in_unsafe_fn)]
 mod engine;
+mod motion;
 mod touchpad;
 mod update;
 use engine::{Action, Button, Engine};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::{cell::RefCell, mem::size_of, time::Instant};
 use windows::{
     Win32::{
@@ -43,6 +44,32 @@ static CLICKS: AtomicU64 = AtomicU64::new(0);
 static ERRORS: AtomicU64 = AtomicU64::new(0);
 static MAX_HOOK_US: AtomicU64 = AtomicU64::new(0);
 static BLOCKED_MOVES: AtomicU64 = AtomicU64::new(0);
+static INTERACTION: AtomicU64 = AtomicU64::new(0);
+static HAS_CONTACTS: AtomicBool = AtomicBool::new(false);
+static SCROLL_EVENTS: AtomicU64 = AtomicU64::new(0);
+static MOUSE_THREAD: AtomicU32 = AtomicU32::new(0);
+static MOUSE_READY: AtomicBool = AtomicBool::new(false);
+const RECONFIGURE_MOUSE: u32 = WM_APP + 10;
+fn publish_interaction(dragging: bool, scrolling: bool) {
+    let flags = u64::from(dragging) | (u64::from(scrolling) << 1);
+    let old = INTERACTION.load(Ordering::Relaxed);
+    if old & 3 != flags {
+        INTERACTION.store(((old.wrapping_add(4)) & !3) | flags, Ordering::Relaxed);
+    }
+}
+fn interaction() -> (motion::Mode, u64) {
+    let value = INTERACTION.load(Ordering::Relaxed);
+    (
+        if value & 2 != 0 {
+            motion::Mode::Scroll
+        } else if value & 1 != 0 {
+            motion::Mode::Drag
+        } else {
+            motion::Mode::Off
+        },
+        value >> 2,
+    )
+}
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
@@ -70,10 +97,41 @@ unsafe fn inject(action: &Action) -> bool {
     };
     SendInput(&[input], size_of::<INPUT>() as i32) == 1
 }
+unsafe fn inject_motion(effect: motion::Effect) {
+    let input = match effect {
+        motion::Effect::Move { dx, dy } => MOUSEINPUT {
+            dx,
+            dy,
+            dwFlags: MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE,
+            ..Default::default()
+        },
+        motion::Effect::Wheel(delta) => {
+            SCROLL_EVENTS.fetch_add(1, Ordering::Relaxed);
+            MOUSEINPUT {
+                mouseData: delta as u32,
+                dwFlags: MOUSEEVENTF_WHEEL,
+                ..Default::default()
+            }
+        }
+    };
+    let input = INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dwExtraInfo: 0x54485044,
+                ..input
+            },
+        },
+    };
+    if SendInput(&[input], size_of::<INPUT>() as i32) != 1 {
+        ERRORS.fetch_add(1, Ordering::Relaxed);
+    }
+}
 impl App {
     unsafe fn release(&mut self, reset: bool) {
         CLICK_ACTIVE.store(false, Ordering::Relaxed);
         POINTER_BLOCK.store(false, Ordering::Relaxed);
+        publish_interaction(false, false);
         let actions = ENGINE.with_borrow_mut(|e| if reset { e.reset() } else { e.release() });
         for a in actions {
             if !inject(&a) {
@@ -82,6 +140,15 @@ impl App {
         }
     }
     fn publish(&self) {
+        let contacts = self.enabled && self.devices.has_contacts();
+        if HAS_CONTACTS.swap(contacts, Ordering::Relaxed) != contacts {
+            let id = MOUSE_THREAD.load(Ordering::Relaxed);
+            if id != 0 {
+                unsafe {
+                    let _ = PostThreadMessageW(id, RECONFIGURE_MOUSE, WPARAM(0), LPARAM(0));
+                }
+            }
+        }
         CLICK_ACTIVE.store(self.enabled && self.devices.touching(), Ordering::Relaxed);
         POINTER_BLOCK.store(
             self.enabled && self.config.edge_pointer_guard && self.devices.block_pointer(),
@@ -96,7 +163,7 @@ impl App {
     }
     unsafe fn refresh(&self) {
         let text = format!(
-            "Thumbpad {}  /  {}\r\n\r\nTouch the touchpad, then hold F / J for left click or K for right click.\r\nHold the key and move your finger to drag.\r\nCtrl / Alt / Win shortcuts pass through. Ctrl+Alt+F12 pauses.\r\n\r\n{}\r\n\r\nClicks: {}   Input injection failures: {}\r\nMax hook processing: {} us (not end-to-end latency)\r\n\r\nAutomatic update checks: {} (startup and every 24 hours)\r\nUpdates require confirmation before installation.\r\n\r\nRight-click the tray icon for settings and controls.\r\nClosing this window keeps Thumbpad running.",
+            "Thumbpad {}  /  {}\r\n\r\nTouch the touchpad: F / J = left click, D / K = right click, G = scroll.\r\nHold a click key to drag; lift and reposition without releasing the key.\r\nHold G and slide up/down to scroll. Ctrl+Alt+F12 pauses.\r\nCtrl / Alt / Win shortcuts pass through.\r\n\r\n{}\r\n\r\nClicks: {}   Input / hook failures: {}\r\nMax keyboard hook processing: {} us (not end-to-end latency)\r\n\r\nAutomatic update checks: {} (startup and every 24 hours)\r\nUpdates require confirmation before installation.\r\n\r\nRight-click the tray icon for settings and controls.\r\nClosing this window keeps Thumbpad running.",
             env!("CARGO_PKG_VERSION"),
             if self.enabled { "ENABLED" } else { "PAUSED" },
             self.devices.summary(),
@@ -104,6 +171,15 @@ impl App {
             ERRORS.load(Ordering::Relaxed),
             MAX_HOOK_US.load(Ordering::Relaxed),
             if self.config.auto_update { "ON" } else { "OFF" }
+        );
+        let text = format!(
+            "{text}\r\nMouse hook: {} / scroll events: {}",
+            if MOUSE_READY.load(Ordering::Relaxed) {
+                "ACTIVE (dedicated thread)"
+            } else {
+                "DETACHED (no mouse interception)"
+            },
+            SCROLL_EVENTS.load(Ordering::Relaxed)
         );
         let text = format!(
             "{text}\r\nPointer edge guard: {} / blocked moves: {}\r\nMay also block an external mouse used during a rejected contact.",
@@ -135,6 +211,8 @@ unsafe extern "system" fn keyboard(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
         0x46 => 0,
         0x4A => 1,
         0x4B => 2,
+        0x44 => 3,
+        0x47 => 4,
         _ => return CallNextHookEx(None, code, wp, lp),
     };
     let start = Instant::now();
@@ -142,7 +220,11 @@ unsafe extern "system" fn keyboard(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
         && ![VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN]
             .iter()
             .any(|vk| modifiers(vk.0 as i32));
-    let (consumed, action) = ENGINE.with_borrow_mut(|e| e.key(index, down, active));
+    let (consumed, action, dragging, scrolling) = ENGINE.with_borrow_mut(|e| {
+        let (consumed, action) = e.key(index, down, active);
+        (consumed, action, e.dragging(), e.scrolling())
+    });
+    publish_interaction(dragging, scrolling);
     if let Some(action) = action {
         if inject(&action) {
             if action.down {
@@ -166,7 +248,9 @@ unsafe extern "system" fn mouse(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if code >= 0 && wp.0 == WM_MOUSEMOVE as usize {
         let event = &*(lp.0 as *const MSLLHOOKSTRUCT);
         if event.flags & LLMHF_INJECTED == 0 {
-            let block = POINTER_BLOCK.load(Ordering::Relaxed);
+            let block = POINTER_BLOCK.load(Ordering::Relaxed)
+                || (INTERACTION.load(Ordering::Relaxed) & 3 != 0
+                    && HAS_CONTACTS.load(Ordering::Relaxed));
             if block {
                 BLOCKED_MOVES.fetch_add(1, Ordering::Relaxed);
                 return LRESULT(1);
@@ -174,6 +258,51 @@ unsafe extern "system" fn mouse(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
         }
     }
     CallNextHookEx(None, code, wp, lp)
+}
+fn start_mouse_thread() -> Result<(std::thread::JoinHandle<()>, u32)> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let worker = std::thread::spawn(move || unsafe {
+        let mut msg = MSG::default();
+        let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);
+        let id = GetCurrentThreadId();
+        MOUSE_THREAD.store(id, Ordering::Relaxed);
+        if tx.send(id).is_err() {
+            return;
+        }
+        let mut hook = None;
+        while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
+            if msg.message == RECONFIGURE_MOUSE {
+                if HAS_CONTACTS.load(Ordering::Relaxed) && hook.is_none() {
+                    match SetWindowsHookExW(
+                        WH_MOUSE_LL,
+                        Some(mouse),
+                        GetModuleHandleW(None).ok().map(Into::into),
+                        0,
+                    ) {
+                        Ok(installed) => {
+                            hook = Some(installed);
+                            MOUSE_READY.store(true, Ordering::Relaxed);
+                        }
+                        Err(_) => {
+                            ERRORS.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                } else if !HAS_CONTACTS.load(Ordering::Relaxed)
+                    && let Some(installed) = hook.take()
+                {
+                    MOUSE_READY.store(false, Ordering::Relaxed);
+                    let _ = UnhookWindowsHookEx(installed);
+                }
+            }
+        }
+        MOUSE_READY.store(false, Ordering::Relaxed);
+        MOUSE_THREAD.store(0, Ordering::Relaxed);
+        if let Some(installed) = hook {
+            let _ = UnhookWindowsHookEx(installed);
+        }
+    });
+    let id = rx.recv().map_err(|e| Error::new(E_FAIL, e.to_string()))?;
+    Ok((worker, id))
 }
 unsafe fn tray(hwnd: HWND, add: bool) {
     let mut data = NOTIFYICONDATAW {
@@ -185,7 +314,7 @@ unsafe fn tray(hwnd: HWND, add: bool) {
         hIcon: LoadIconW(None, IDI_APPLICATION).unwrap_or_default(),
         ..Default::default()
     };
-    let tip = wide("Thumbpad - F/J: left click, K: right click");
+    let tip = wide("Thumbpad - F/J: left, D/K: right, G: scroll");
     data.szTip[..tip.len()].copy_from_slice(&tip);
     let _ = Shell_NotifyIconW(if add { NIM_ADD } else { NIM_DELETE }, &data);
 }
@@ -200,12 +329,26 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             return LRESULT(0);
         }
         WM_INPUT => {
-            APP.with_borrow_mut(|app| {
+            let effects = APP.with_borrow_mut(|app| {
                 if let Some(a) = app {
-                    a.devices.input(HRAWINPUT(lp.0 as _));
+                    let (mode, epoch) = interaction();
+                    let effects = a.devices.input(
+                        HRAWINPUT(lp.0 as _),
+                        mode,
+                        epoch,
+                        a.config.motion_tuning(),
+                    );
                     a.publish();
+                    effects
+                } else {
+                    Vec::new()
                 }
             });
+            if MOUSE_READY.load(Ordering::Relaxed) {
+                for effect in effects {
+                    inject_motion(effect);
+                }
+            }
         }
         WM_INPUT_DEVICE_CHANGE => {
             APP.with_borrow_mut(|app| {
@@ -484,7 +627,9 @@ fn run() -> Result<()> {
             })
         });
         let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard), Some(instance.into()), 0)?;
-        let mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse), Some(instance.into()), 0)?;
+        // No global mouse hook while the touchpad is untouched. When needed it
+        // runs on its own message thread, independent of rendering and settings.
+        let (mouse_worker, mouse_thread_id) = start_mouse_thread()?;
         tray(hwnd, true);
         SetTimer(Some(hwnd), 1, 500, None);
         // Consume STARTUPINFO's show command even for a hidden launch. Otherwise
@@ -512,7 +657,8 @@ fn run() -> Result<()> {
             DispatchMessageW(&msg);
         }
         let _ = UnhookWindowsHookEx(hook);
-        let _ = UnhookWindowsHookEx(mouse_hook);
+        let _ = PostThreadMessageW(mouse_thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+        let _ = mouse_worker.join();
         let _ = CloseHandle(mutex);
         Ok(())
     }

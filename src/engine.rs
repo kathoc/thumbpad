@@ -1,9 +1,9 @@
 //! Key ownership is fixed at the first physical down, including across repeats.
 #[derive(Default)]
 pub struct Engine {
-    down: [bool; 3],
-    captured: [bool; 3],
-    held: [bool; 3],
+    down: [bool; 5],
+    captured: [bool; 5],
+    held: [bool; 5],
 }
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Button {
@@ -16,14 +16,18 @@ pub struct Action {
     pub down: bool,
 }
 impl Engine {
-    fn button(i: usize) -> Button {
-        if i == 2 { Button::Right } else { Button::Left }
+    fn button(i: usize) -> Option<Button> {
+        match i {
+            0 | 1 => Some(Button::Left),
+            2 | 3 => Some(Button::Right),
+            _ => None,
+        }
     }
     fn count(&self, b: Button) -> usize {
         self.held
             .iter()
             .enumerate()
-            .filter(|(i, held)| **held && Self::button(*i) == b)
+            .filter(|(i, held)| **held && Self::button(*i) == Some(b))
             .count()
     }
     pub fn key(&mut self, i: usize, down: bool, active: bool) -> (bool, Option<Action>) {
@@ -37,9 +41,14 @@ impl Engine {
             if !active {
                 return (false, None);
             }
-            let first = self.count(button) == 0;
+            let first = button.is_some_and(|b| self.count(b) == 0);
             self.held[i] = true;
-            (true, first.then_some(Action { button, down: true }))
+            (
+                true,
+                button
+                    .filter(|_| first)
+                    .map(|button| Action { button, down: true }),
+            )
         } else {
             let consumed = self.captured[i];
             let held = self.held[i];
@@ -48,10 +57,12 @@ impl Engine {
             self.held[i] = false;
             (
                 consumed,
-                (held && self.count(button) == 0).then_some(Action {
-                    button,
-                    down: false,
-                }),
+                button
+                    .filter(|b| held && self.count(*b) == 0)
+                    .map(|button| Action {
+                        button,
+                        down: false,
+                    }),
             )
         }
     }
@@ -64,7 +75,7 @@ impl Engine {
                 down: false,
             })
             .collect();
-        self.held = [false; 3];
+        self.held = [false; 5];
         actions
     }
     pub fn reset(&mut self) -> Vec<Action> {
@@ -72,10 +83,50 @@ impl Engine {
         *self = Self::default();
         actions
     }
+    pub fn dragging(&self) -> bool {
+        self.held[..4].iter().any(|held| *held)
+    }
+    pub fn scrolling(&self) -> bool {
+        self.held[4]
+    }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn d_and_k_share_right_button_ownership() {
+        let mut e = Engine::default();
+        assert_eq!(
+            e.key(3, true, true).1,
+            Some(Action {
+                button: Button::Right,
+                down: true
+            })
+        );
+        assert_eq!(e.key(2, true, true), (true, None));
+        assert_eq!(e.key(3, false, false), (true, None));
+        assert_eq!(
+            e.key(2, false, false).1,
+            Some(Action {
+                button: Button::Right,
+                down: false
+            })
+        );
+        assert!(!e.dragging());
+    }
+    #[test]
+    fn g_owns_scroll_without_mouse_buttons_and_pause_clears_it() {
+        let mut e = Engine::default();
+        assert_eq!(e.key(4, true, true), (true, None));
+        assert!(e.scrolling());
+        assert!(!e.dragging());
+        assert_eq!(e.key(4, true, false), (true, None));
+        assert!(e.release().is_empty());
+        assert!(!e.scrolling());
+        assert_eq!(e.key(4, false, false), (true, None));
+        assert_eq!(e.key(4, true, false), (false, None));
+        assert!(!e.scrolling());
+    }
     #[test]
     fn drag_survives_contact_loss_and_repeat() {
         let mut e = Engine::default();

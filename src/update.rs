@@ -25,6 +25,10 @@ pub struct Config {
     pub edge_top_percent: f64,
     pub edge_grace_ms: u64,
     pub edge_pointer_guard: bool,
+    pub drag_pixels_per_pad_width: f64,
+    pub drag_pixels_per_pad_height: f64,
+    pub scroll_units_per_pad_height: f64,
+    pub scroll_invert: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -34,6 +38,10 @@ impl Default for Config {
             edge_top_percent: 15.0,
             edge_grace_ms: 500,
             edge_pointer_guard: true,
+            drag_pixels_per_pad_width: 1600.0,
+            drag_pixels_per_pad_height: 1000.0,
+            scroll_units_per_pad_height: 2400.0,
+            scroll_invert: false,
         }
     }
 }
@@ -50,10 +58,25 @@ impl Config {
             || !self.edge_top_percent.is_finite()
             || !(0.0..=80.0).contains(&self.edge_top_percent)
             || self.edge_grace_ms > 5000
+            || ![
+                self.drag_pixels_per_pad_width,
+                self.drag_pixels_per_pad_height,
+                self.scroll_units_per_pad_height,
+            ]
+            .iter()
+            .all(|v| v.is_finite() && (1.0..=20000.0).contains(v))
         {
-            return Err("Invalid edge settings: side 0..45%, top 0..80%, grace 0..5000 ms".into());
+            return Err("Invalid settings: side 0..45%, top 0..80%, grace 0..5000 ms, motion/scroll scales 1..20000".into());
         }
         Ok(())
+    }
+    pub fn motion_tuning(&self) -> crate::motion::Tuning {
+        crate::motion::Tuning {
+            drag_x: self.drag_pixels_per_pad_width,
+            drag_y: self.drag_pixels_per_pad_height,
+            wheel: self.scroll_units_per_pad_height,
+            invert: self.scroll_invert,
+        }
     }
     pub fn load() -> Self {
         let path = data_dir().join("settings.json");
@@ -69,7 +92,27 @@ impl Config {
             .and_then(|data| serde_json::from_slice::<Self>(&data).map_err(|e| e.to_string()))
             .and_then(|c| c.validate().map(|()| c).map_err(|e| e.to_string()))
         {
-            Ok(config) => config,
+            Ok(config) => {
+                // Preserve existing values, adding defaults introduced by upgrades.
+                let needs_migration = fs::read(&path)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                    .is_some_and(|value| {
+                        [
+                            "edge_pointer_guard",
+                            "drag_pixels_per_pad_width",
+                            "drag_pixels_per_pad_height",
+                            "scroll_units_per_pad_height",
+                            "scroll_invert",
+                        ]
+                        .iter()
+                        .any(|key| value.get(key).is_none())
+                    });
+                if needs_migration && let Err(error) = config.save() {
+                    crate::message(&format!("Could not migrate settings: {error}"));
+                }
+                config
+            }
             Err(e) => {
                 crate::message(&format!(
                     "Settings could not be loaded; using defaults for this session.\n{e}\n{}",
