@@ -118,7 +118,8 @@ S または Shift+S を押して指を弾き、パッドから指を離すと、
   "pointer_mode": "mouse",
   "pointer_inertia_decay": 5.0,
   "pointer_stop_hold_ms": 100,
-  "pointer_stop_hold_enabled": true
+  "pointer_stop_hold_enabled": true,
+  "trackball_pointer_speed": 1.25
 }
 ```
 
@@ -200,3 +201,5 @@ GitHub Actions がテスト・ビルド・インストーラー作成を行い�
 MIT License
 
 短い操作では慣性を抑えます。ポインターは移動量12px以下で慣性なし、120px以上で従来の強さになります。スクロールは18ホイール単位以下で慣性なし、180単位以上で従来の強さになり、その間は滑らかに増加します。指を離す直前の速度も反映します。
+
+`trackball_pointer_speed` はトラックボールモードのポインター感度（0.25–4.0、既定1.25倍）です。トレイの `Trackball pointer faster / slower` から0.1倍ずつ即時変更でき、保存されます。通常マウスモードとスクロール感度は変わりません。2本指以上の操作では、全指を離すまでトラックボールのポインター移動と慣性を抑え、Windowsの2本指スクロールを通します。クリックキーを押したドラッグは継続できます。

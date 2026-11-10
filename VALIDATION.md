@@ -112,3 +112,7 @@ filter driver. No independent Authenticode or update-signing key is configured.
 ## v0.1.7
 
 44 tests passed, one native timing probe ignored. Added coverage for tiny-gesture suppression, monotonic bounded travel gain, unchanged maximum release speed, preserved pointer direction, and persistent hold toggle duration. Pointer travel ramps from 12 to 120 pixels; wheel travel ramps from 18 to 180 units using smoothstep. Existing release-velocity and stale-release checks remain active.
+
+## v0.1.8
+
+46 tests passed, one native timing probe ignored; formatting and clippy passed. Added a frame-level regression for single-finger movement, a second finger at an excluded edge, a remaining finger after scrolling, full lift and a jump-free new gesture. Trackball pointer velocity estimation is reset during the multi-finger gesture. Configuration tests verify independent pointer gain, unchanged wheel/mouse tuning, preserved hold duration, and invalid gain rejection. Default trackball sensitivity is now 125%; this is an adjustable initial tuning, not a measured match to Windows Precision Touchpad acceleration. Physical two-finger scrolling and perceived sensitivity still require user verification.

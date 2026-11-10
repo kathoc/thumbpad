@@ -44,6 +44,7 @@ pub struct Config {
     pub pointer_inertia_decay: f64,
     pub pointer_stop_hold_ms: u64,
     pub pointer_stop_hold_enabled: bool,
+    pub trackball_pointer_speed: f64,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -65,6 +66,7 @@ impl Default for Config {
             pointer_inertia_decay: 5.0,
             pointer_stop_hold_ms: 100,
             pointer_stop_hold_enabled: true,
+            trackball_pointer_speed: 1.25,
         }
     }
 }
@@ -82,6 +84,8 @@ impl Config {
             || !(0.0..=80.0).contains(&self.edge_top_percent)
             || self.edge_grace_ms > 5000
             || self.pointer_stop_hold_ms > 2000
+            || !self.trackball_pointer_speed.is_finite()
+            || !(0.25..=4.0).contains(&self.trackball_pointer_speed)
             || !self.inertia_decay.is_finite()
             || !(1.0..=20.0).contains(&self.inertia_decay)
             || !self.pointer_inertia_decay.is_finite()
@@ -100,9 +104,14 @@ impl Config {
         Ok(())
     }
     pub fn motion_tuning(&self) -> crate::motion::Tuning {
+        let gain = if self.pointer_mode == PointerMode::Trackball {
+            self.trackball_pointer_speed
+        } else {
+            1.0
+        };
         crate::motion::Tuning {
-            drag_x: self.drag_pixels_per_pad_width,
-            drag_y: self.drag_pixels_per_pad_height,
+            drag_x: self.drag_pixels_per_pad_width * gain,
+            drag_y: self.drag_pixels_per_pad_height * gain,
             wheel: self.scroll_units_per_pad_height,
             invert: self.scroll_invert,
             wheel_x: self.scroll_units_per_pad_width,
@@ -143,6 +152,7 @@ impl Config {
                             "pointer_inertia_decay",
                             "pointer_stop_hold_ms",
                             "pointer_stop_hold_enabled",
+                            "trackball_pointer_speed",
                         ]
                         .iter()
                         .any(|key| value.get(key).is_none())
@@ -408,6 +418,25 @@ mod tests {
         assert_eq!(config.pointer_mode, PointerMode::Trackball);
         assert!(config.validate().is_ok());
         assert!(serde_json::from_str::<Config>(r#"{"pointer_mode":"unknown"}"#).is_err());
+    }
+    #[test]
+    fn trackball_speed_only_scales_pointer_and_preserves_custom_settings() {
+        let mut config: Config =
+            serde_json::from_str(r#"{"trackball_pointer_speed":1.5,"pointer_stop_hold_ms":100}"#)
+                .unwrap();
+        assert_eq!(config.motion_tuning().drag_x, 1600.0);
+        config.pointer_mode = PointerMode::Trackball;
+        let tuning = config.motion_tuning();
+        assert_eq!(tuning.drag_x, 2400.0);
+        assert_eq!(tuning.drag_y, 1500.0);
+        assert_eq!(tuning.wheel, 2400.0);
+        assert_eq!(tuning.wheel_x, 2400.0);
+        assert_eq!(config.pointer_stop_hold_ms, 100);
+        assert!(config.validate().is_ok());
+        for invalid in [0.0, 4.01, f64::NAN, f64::INFINITY] {
+            config.trackball_pointer_speed = invalid;
+            assert!(config.validate().is_err());
+        }
     }
     #[test]
     fn reversed_scroll_defaults_and_saved_direction_preferences() {

@@ -1,3 +1,9 @@
+# v0.1.8
+
+- Add independent trackball pointer sensitivity, defaulting to 125%, with persistent faster/slower tray controls.
+- Suppress trackball pointer movement and momentum during native two-finger gestures until all fingers lift. Rebase the next single-finger gesture to avoid jumps.
+- Preserve existing mouse-mode and scrolling sensitivity, click-key dragging, and stop-hold settings.
+
 # v0.1.7
 
 - Scale pointer and scroll inertia by gesture travel, suppressing tiny gestures and capping at the previous strength.

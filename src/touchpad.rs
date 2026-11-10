@@ -25,11 +25,13 @@ struct Gate {
     grace: std::time::Duration,
     continuing: bool,
     physical: bool,
+    multitouch_gesture: bool,
 }
 impl Gate {
     fn new(side: f64, top: f64, ms: u64) -> Self {
         Self {
             contacts: HashMap::new(),
+            multitouch_gesture: false,
             last_motion: None,
             side: side / 100.0,
             top: top / 100.0,
@@ -69,6 +71,13 @@ impl Gate {
     }
     fn touching(&self) -> bool {
         self.contacts.values().any(|c| c.accepted)
+    }
+    fn pointer_point(&self, mode: Mode) -> Option<(u32, f64, f64)> {
+        if mode == Mode::Pointer && self.multitouch_gesture {
+            None
+        } else {
+            self.primary()
+        }
     }
     fn primary(&self) -> Option<(u32, f64, f64)> {
         self.contacts
@@ -124,6 +133,8 @@ impl Frame {
         for sample in &self.samples {
             gate.sample(sample.id, sample.point, sample.down, now);
         }
+        gate.multitouch_gesture =
+            !gate.contacts.is_empty() && (gate.multitouch_gesture || gate.contacts.len() > 1);
         self.expected = 0;
         self.samples.clear();
         self.physical = false;
@@ -429,6 +440,12 @@ impl Devices {
             .flatten()
             .any(|d| !d.gate.contacts.is_empty())
     }
+    pub fn pointer_gesture_blocked(&self) -> bool {
+        self.devices
+            .values()
+            .flatten()
+            .any(|d| d.gate.multitouch_gesture)
+    }
     pub fn physical_contacts(&self) -> bool {
         self.devices.values().flatten().any(|d| d.gate.physical)
     }
@@ -490,9 +507,10 @@ impl Devices {
         for report in reports.chunks_exact_mut(size) {
             if device.report(report) {
                 complete = true;
-                if let Some(effect) = device
-                    .motion
-                    .feed(mode, epoch, device.gate.primary(), tuning)
+                if let Some(effect) =
+                    device
+                        .motion
+                        .feed(mode, epoch, device.gate.pointer_point(mode), tuning)
                 {
                     effects.push(effect);
                 }
@@ -636,6 +654,67 @@ mod tests {
         frame.commit(&mut g, t);
         assert!(!g.touching());
         assert!(g.contacts.is_empty());
+    }
+    #[test]
+    fn two_finger_gesture_blocks_pointer_until_all_fingers_lift() {
+        let mut g = Gate::new(12.0, 15.0, 500);
+        let t = Instant::now();
+        let mut frame = Frame::default();
+        let mut motion = Motion::default();
+        let tuning = Tuning {
+            drag_x: 1600.0,
+            drag_y: 1000.0,
+            wheel: 2400.0,
+            invert: true,
+            wheel_x: 2400.0,
+            horizontal_invert: true,
+        };
+        let set = |g: &mut Gate, frame: &mut Frame, points: &[(u32, f64)]| {
+            frame.start(points.len());
+            frame.samples.extend(points.iter().map(|&(id, x)| Sample {
+                id,
+                point: p(x, 0.5),
+                down: true,
+            }));
+            assert!(frame.commit(g, t));
+        };
+        set(&mut g, &mut frame, &[(1, 0.4)]);
+        assert_eq!(
+            motion.feed(Mode::Pointer, 0, g.pointer_point(Mode::Pointer), tuning),
+            None
+        );
+        set(&mut g, &mut frame, &[(1, 0.5)]);
+        assert!(
+            motion
+                .feed(Mode::Pointer, 0, g.pointer_point(Mode::Pointer), tuning)
+                .is_some()
+        );
+        // The second finger counts even when it started in the excluded edge.
+        set(&mut g, &mut frame, &[(1, 0.6), (2, 0.99)]);
+        assert!(g.multitouch_gesture);
+        assert_eq!(
+            motion.feed(Mode::Pointer, 0, g.pointer_point(Mode::Pointer), tuning),
+            None
+        );
+        assert!(g.pointer_point(Mode::Drag).is_some());
+        set(&mut g, &mut frame, &[(1, 0.7)]);
+        assert_eq!(
+            motion.feed(Mode::Pointer, 0, g.pointer_point(Mode::Pointer), tuning),
+            None
+        );
+        set(&mut g, &mut frame, &[]);
+        assert!(!g.multitouch_gesture);
+        set(&mut g, &mut frame, &[(1, 0.8)]);
+        assert_eq!(
+            motion.feed(Mode::Pointer, 0, g.pointer_point(Mode::Pointer), tuning),
+            None
+        );
+        set(&mut g, &mut frame, &[(1, 0.9)]);
+        assert!(
+            motion
+                .feed(Mode::Pointer, 0, g.pointer_point(Mode::Pointer), tuning)
+                .is_some()
+        );
     }
     #[test]
     fn zero_contact_frame_clears_state() {

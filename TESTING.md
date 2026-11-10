@@ -60,3 +60,6 @@ OS の版・ビルド、PC の型番、タッチパッドのドライバーバ�
 46. Toggle Hold pointer after inertia stop off/on, verify immediate effect and persistence after restart; duration remains 100ms.
 
 47. Compare tiny, medium and large flicks in pointer and vertical/horizontal scroll modes. Tiny motions should not coast; larger motions ramp up to the previous maximum. Retouch must still stop inertia.
+
+48. In trackball mode, verify increased pointer travel and faster/slower tray controls. Restart and check persistence; mouse mode and scroll sensitivity must remain unchanged.
+49. Scroll natively with two fingers, including one finger at the edge; pointer must remain still. Lift one finger, then all fingers; the next single-finger motion must resume without jumping or momentum from the scroll gesture.

@@ -36,6 +36,8 @@ const INVERT_HSCROLL: usize = 109;
 const INERTIA_ENABLED: usize = 110;
 const POINTER_MODE: usize = 111;
 const POINTER_STOP_HOLD: usize = 112;
+const POINTER_FASTER: usize = 113;
+const POINTER_SLOWER: usize = 114;
 const INERTIA_TIMER: usize = 2;
 struct App {
     devices: touchpad::Devices,
@@ -99,6 +101,12 @@ fn wide(s: &str) -> Vec<u16> {
 }
 fn flip_setting(config: &mut update::Config, command: usize) {
     match command {
+        POINTER_FASTER | POINTER_SLOWER => {
+            let step = if command == POINTER_FASTER { 0.1 } else { -0.1 };
+            config.trackball_pointer_speed =
+                ((config.trackball_pointer_speed * 100.0 + step * 100.0).round() / 100.0)
+                    .clamp(0.25, 4.0);
+        }
         AUTO_UPDATE => config.auto_update = !config.auto_update,
         INVERT_SCROLL => config.scroll_invert = !config.scroll_invert,
         INVERT_HSCROLL => config.scroll_horizontal_invert = !config.scroll_horizontal_invert,
@@ -553,6 +561,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                                 .sum();
                             a.inertia.record(axis, delta, now);
                             if trackball
+                                && !(mode == motion::Mode::Pointer
+                                    && a.devices.pointer_gesture_blocked())
                                 && matches!(mode, motion::Mode::Pointer | motion::Mode::Drag)
                             {
                                 let (dx, dy) =
@@ -666,7 +676,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 }
                 UPDATE => update::check_async(true),
                 command @ (AUTO_UPDATE | INVERT_SCROLL | INVERT_HSCROLL | INERTIA_ENABLED
-                | POINTER_MODE | POINTER_STOP_HOLD) => {
+                | POINTER_MODE | POINTER_STOP_HOLD | POINTER_FASTER | POINTER_SLOWER) => {
                     let error = APP.with_borrow_mut(|app| {
                         let a = app.as_mut()?;
                         let previous = a.config.clone();
@@ -751,6 +761,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                             INERTIA_ENABLED,
                             w!("Inertial scrolling"),
                         );
+                        for (id, label) in [
+                            (POINTER_FASTER, "Trackball pointer faster"),
+                            (POINTER_SLOWER, "Trackball pointer slower"),
+                        ] {
+                            let label = wide(&format!(
+                                "{} (current {:.0}%)",
+                                label,
+                                a.config.trackball_pointer_speed * 100.0
+                            ));
+                            let _ = AppendMenuW(menu, MF_STRING, id, PCWSTR(label.as_ptr()));
+                        }
                         for (id, label, checked) in [
                             (
                                 POINTER_STOP_HOLD,
