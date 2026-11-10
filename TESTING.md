@@ -56,3 +56,7 @@ OS の版・ビルド、PC の型番、タッチパッドのドライバーバ�
 ## この開発環境での確認結果
 
 結果は `VALIDATION.md` を参照。未実施項目を実施済みとして報告しないでください。
+
+46. Toggle Hold pointer after inertia stop off/on, verify immediate effect and persistence after restart; duration remains 100ms.
+
+47. Compare tiny, medium and large flicks in pointer and vertical/horizontal scroll modes. Tiny motions should not coast; larger motions ramp up to the previous maximum. Retouch must still stop inertia.

@@ -35,6 +35,7 @@ const INVERT_SCROLL: usize = 108;
 const INVERT_HSCROLL: usize = 109;
 const INERTIA_ENABLED: usize = 110;
 const POINTER_MODE: usize = 111;
+const POINTER_STOP_HOLD: usize = 112;
 const INERTIA_TIMER: usize = 2;
 struct App {
     devices: touchpad::Devices,
@@ -102,6 +103,12 @@ fn flip_setting(config: &mut update::Config, command: usize) {
         INVERT_SCROLL => config.scroll_invert = !config.scroll_invert,
         INVERT_HSCROLL => config.scroll_horizontal_invert = !config.scroll_horizontal_invert,
         INERTIA_ENABLED => config.inertia_enabled = !config.inertia_enabled,
+        POINTER_STOP_HOLD => {
+            config.pointer_stop_hold_enabled = !config.pointer_stop_hold_enabled;
+            if config.pointer_stop_hold_enabled && config.pointer_stop_hold_ms == 0 {
+                config.pointer_stop_hold_ms = 100;
+            }
+        }
         POINTER_MODE => {
             config.pointer_mode = if config.pointer_mode == update::PointerMode::Mouse {
                 update::PointerMode::Trackball
@@ -519,7 +526,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         now,
                         trackball,
                         stopped_by_touch,
-                        std::time::Duration::from_millis(a.config.pointer_stop_hold_ms),
+                        std::time::Duration::from_millis(if a.config.pointer_stop_hold_enabled {
+                            a.config.pointer_stop_hold_ms
+                        } else {
+                            0
+                        }),
                     ) {
                         effects.retain(|effect| !matches!(effect, motion::Effect::Move { .. }));
                     }
@@ -655,13 +666,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 }
                 UPDATE => update::check_async(true),
                 command @ (AUTO_UPDATE | INVERT_SCROLL | INVERT_HSCROLL | INERTIA_ENABLED
-                | POINTER_MODE) => {
+                | POINTER_MODE | POINTER_STOP_HOLD) => {
                     let error = APP.with_borrow_mut(|app| {
                         let a = app.as_mut()?;
+                        let previous = a.config.clone();
                         flip_setting(&mut a.config, command);
                         let error = a.config.save().err().map(|e| e.to_string());
                         if error.is_some() {
-                            flip_setting(&mut a.config, command);
+                            a.config = previous;
+                        }
+                        if command == POINTER_STOP_HOLD {
+                            a.stop_hold.reset();
                         }
                         if command != AUTO_UPDATE {
                             a.stop_inertia();
@@ -737,6 +752,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                             w!("Inertial scrolling"),
                         );
                         for (id, label, checked) in [
+                            (
+                                POINTER_STOP_HOLD,
+                                w!("Hold pointer after inertia stop"),
+                                a.config.pointer_stop_hold_enabled,
+                            ),
                             (
                                 INVERT_SCROLL,
                                 w!("Invert vertical scroll"),
@@ -1033,6 +1053,23 @@ mod callback_tests {
         assert!(!config.scroll_invert);
         flip_setting(&mut config, INVERT_HSCROLL);
         assert!(!config.scroll_horizontal_invert);
+    }
+    #[test]
+    fn stop_hold_toggle_preserves_duration() {
+        let mut config = update::Config {
+            pointer_stop_hold_ms: 100,
+            ..Default::default()
+        };
+        flip_setting(&mut config, POINTER_STOP_HOLD);
+        assert!(!config.pointer_stop_hold_enabled);
+        assert_eq!(config.pointer_stop_hold_ms, 100);
+        flip_setting(&mut config, POINTER_STOP_HOLD);
+        assert!(config.pointer_stop_hold_enabled);
+        assert_eq!(config.pointer_stop_hold_ms, 100);
+        config.pointer_stop_hold_ms = 0;
+        config.pointer_stop_hold_enabled = false;
+        flip_setting(&mut config, POINTER_STOP_HOLD);
+        assert_eq!(config.pointer_stop_hold_ms, 100);
     }
     #[test]
     fn mouse_hook_can_interrupt_a_borrowed_ui_state() {

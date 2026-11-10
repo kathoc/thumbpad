@@ -1,3 +1,11 @@
+# v0.1.7
+
+- Scale pointer and scroll inertia by gesture travel, suppressing tiny gestures and capping at the previous strength.
+
+- Add a tray toggle for the pointer hold after stopping inertia.
+- Preserve the hold duration when toggled off; default to 100ms for new settings.
+- Apply changes immediately and persist across restarts.
+
 # Thumbpad v0.1.6
 
 - トラックボールモードで指を置いて慣性を止めたとき、300msポインターを固定するよう変更。

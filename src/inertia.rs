@@ -1,10 +1,16 @@
 //! Time-based wheel momentum; touching the pad cancels both queued and running motion.
 use crate::motion::{Effect, Mode};
 use std::time::{Duration, Instant};
+// Smoothly ramp release speed from zero to the existing maximum.
+fn travel_gain(distance: f64, minimum: f64, full: f64) -> f64 {
+    let t = ((distance - minimum) / (full - minimum)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
 #[derive(Default)]
 pub struct Inertia {
     axis: Option<Mode>,
     velocity: f64,
+    travel: f64,
     sample_at: Option<Instant>,
     motion_at: Option<Instant>,
     tick_at: Option<Instant>,
@@ -22,6 +28,7 @@ impl Inertia {
         let previous = self.sample_at;
         if self.axis != axis {
             self.velocity = 0.0;
+            self.travel = 0.0;
             self.motion_at = None;
         }
         let changed = self.axis != axis;
@@ -29,9 +36,14 @@ impl Inertia {
         self.sample_at = Some(now);
         if axis.is_none() {
             self.velocity = 0.0;
+            self.travel = 0.0;
             self.motion_at = None;
             return;
         }
+        if previous.is_some_and(|t| now.saturating_duration_since(t) > Duration::from_millis(150)) {
+            self.travel = 0.0;
+        }
+        self.travel += delta.abs();
         if delta != 0.0 {
             self.motion_at = Some(now);
         }
@@ -57,6 +69,7 @@ impl Inertia {
         };
     }
     pub fn release(&mut self, now: Instant) -> bool {
+        self.velocity *= travel_gain(self.travel, 18.0, 180.0);
         self.release_with_threshold(now, 120.0)
     }
     fn release_with_threshold(&mut self, now: Instant, minimum: f64) -> bool {
@@ -132,6 +145,9 @@ impl PointerInertia {
         self.y.record(Some(Mode::Scroll), dy, now);
     }
     pub fn release(&mut self, now: Instant) -> bool {
+        let gain = travel_gain(self.x.travel.hypot(self.y.travel), 12.0, 120.0);
+        self.x.velocity *= gain;
+        self.y.velocity *= gain;
         if self.x.velocity.hypot(self.y.velocity) < 120.0 {
             self.stop();
             return false;
@@ -159,6 +175,50 @@ impl PointerInertia {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn small_gestures_do_not_coast_and_gain_is_bounded() {
+        let t = Instant::now();
+        let mut wheel = Inertia::default();
+        let mut pointer = PointerInertia::default();
+        for i in 0..6 {
+            let now = t + Duration::from_millis(i * 2);
+            wheel.record(Some(Mode::Scroll), 2.0, now);
+            pointer.record(1.0, 1.0, now);
+        }
+        assert!(!wheel.release(t + Duration::from_millis(10)));
+        assert!(!pointer.release(t + Duration::from_millis(10)));
+        assert_eq!(travel_gain(12.0, 12.0, 120.0), 0.0);
+        assert_eq!(travel_gain(120.0, 12.0, 120.0), 1.0);
+        assert_eq!(travel_gain(1200.0, 12.0, 120.0), 1.0);
+        for d in 13..120 {
+            assert!(travel_gain(d as f64, 12.0, 120.0) > travel_gain(d as f64 - 1.0, 12.0, 120.0));
+        }
+    }
+    #[test]
+    fn longer_travel_increases_release_speed_with_same_final_velocity() {
+        let t = Instant::now();
+        let make = |travel| Inertia {
+            axis: Some(Mode::Scroll),
+            velocity: 2000.0,
+            travel,
+            motion_at: Some(t),
+            ..Default::default()
+        };
+        let mut short = make(50.0);
+        let mut long = make(180.0);
+        assert!(short.release(t));
+        assert!(long.release(t));
+        assert!(short.velocity < long.velocity);
+        assert_eq!(long.velocity, 2000.0);
+        let mut pointer = PointerInertia {
+            x: make(60.0),
+            y: make(30.0),
+        };
+        pointer.y.velocity = 1000.0;
+        assert!(pointer.release(t));
+        assert!((pointer.y.velocity / pointer.x.velocity - 0.5).abs() < 1e-10);
+        assert!(pointer.x.velocity < 2000.0);
+    }
     #[test]
     fn pointer_keeps_subpixel_minor_axis_and_direction_after_release() {
         let t = Instant::now();

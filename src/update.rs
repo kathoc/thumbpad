@@ -24,7 +24,7 @@ pub enum PointerMode {
     Mouse,
     Trackball,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub auto_update: bool,
@@ -43,6 +43,7 @@ pub struct Config {
     pub pointer_mode: PointerMode,
     pub pointer_inertia_decay: f64,
     pub pointer_stop_hold_ms: u64,
+    pub pointer_stop_hold_enabled: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -62,7 +63,8 @@ impl Default for Config {
             inertia_decay: 5.0,
             pointer_mode: PointerMode::Mouse,
             pointer_inertia_decay: 5.0,
-            pointer_stop_hold_ms: 300,
+            pointer_stop_hold_ms: 100,
+            pointer_stop_hold_enabled: true,
         }
     }
 }
@@ -140,6 +142,7 @@ impl Config {
                             "pointer_mode",
                             "pointer_inertia_decay",
                             "pointer_stop_hold_ms",
+                            "pointer_stop_hold_enabled",
                         ]
                         .iter()
                         .any(|key| value.get(key).is_none())

@@ -108,3 +108,7 @@ latency have NOT been certified on this host or other devices.
 Use TESTING.md for physical verification. The pointer edge guard is contact-correlated
 and can also block simultaneous external-mouse movement. It is not a device-isolated
 filter driver. No independent Authenticode or update-signing key is configured.
+
+## v0.1.7
+
+44 tests passed, one native timing probe ignored. Added coverage for tiny-gesture suppression, monotonic bounded travel gain, unchanged maximum release speed, preserved pointer direction, and persistent hold toggle duration. Pointer travel ramps from 12 to 120 pixels; wheel travel ramps from 18 to 180 units using smoothstep. Existing release-velocity and stale-release checks remain active.
