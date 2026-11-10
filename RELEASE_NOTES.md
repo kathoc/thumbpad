@@ -1,3 +1,9 @@
+# v0.1.10
+
+- Filter small trackball pointer jitter without buffering cursor motion.
+- Use confirmed motion to launch pointer inertia so a single lift sample cannot trigger it or increase its launch speed.
+- Add trackball inertia travel threshold and strength to Edit Settings.
+
 # v0.1.9
 
 - Replace external Notepad launching with a built-in JSON settings editor.

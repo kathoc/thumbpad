@@ -42,6 +42,8 @@ pub struct Config {
     pub inertia_decay: f64,
     pub pointer_mode: PointerMode,
     pub pointer_inertia_decay: f64,
+    pub pointer_inertia_min_travel_px: f64,
+    pub pointer_inertia_strength: f64,
     pub pointer_stop_hold_ms: u64,
     pub pointer_stop_hold_enabled: bool,
     pub trackball_pointer_speed: f64,
@@ -64,6 +66,8 @@ impl Default for Config {
             inertia_decay: 5.0,
             pointer_mode: PointerMode::Mouse,
             pointer_inertia_decay: 5.0,
+            pointer_inertia_min_travel_px: 12.0,
+            pointer_inertia_strength: 1.0,
             pointer_stop_hold_ms: 100,
             pointer_stop_hold_enabled: true,
             trackball_pointer_speed: 1.25,
@@ -83,6 +87,12 @@ impl Config {
         Ok(config)
     }
     fn validate(&self) -> Fallible<()> {
+        if !(0.0..=1000.0).contains(&self.pointer_inertia_min_travel_px) {
+            return Err("pointer_inertia_min_travel_px must be between 0 and 1000".into());
+        }
+        if !(0.0..=2.0).contains(&self.pointer_inertia_strength) {
+            return Err("pointer_inertia_strength must be between 0 and 2".into());
+        }
         if !self.edge_side_percent.is_finite()
             || !(0.0..=45.0).contains(&self.edge_side_percent)
             || !self.edge_top_percent.is_finite()
@@ -115,6 +125,11 @@ impl Config {
             1.0
         };
         crate::motion::Tuning {
+            pointer_deadband: if self.pointer_mode == PointerMode::Trackball {
+                2.0
+            } else {
+                0.0
+            },
             drag_x: self.drag_pixels_per_pad_width * gain,
             drag_y: self.drag_pixels_per_pad_height * gain,
             wheel: self.scroll_units_per_pad_height,
@@ -155,6 +170,8 @@ impl Config {
                             "inertia_decay",
                             "pointer_mode",
                             "pointer_inertia_decay",
+                            "pointer_inertia_min_travel_px",
+                            "pointer_inertia_strength",
                             "pointer_stop_hold_ms",
                             "pointer_stop_hold_enabled",
                             "trackball_pointer_speed",

@@ -574,6 +574,7 @@ mod tests {
         let mut g = Gate::new(12.0, 15.0, 500);
         let mut motion = Motion::default();
         let tuning = Tuning {
+            pointer_deadband: 0.0,
             drag_x: 1000.0,
             drag_y: 1000.0,
             wheel: 2400.0,
@@ -662,6 +663,7 @@ mod tests {
         let mut frame = Frame::default();
         let mut motion = Motion::default();
         let tuning = Tuning {
+            pointer_deadband: 0.0,
             drag_x: 1600.0,
             drag_y: 1000.0,
             wheel: 2400.0,

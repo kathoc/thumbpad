@@ -127,31 +127,58 @@ impl Inertia {
         }
     }
 }
+const POINTER_SAMPLE_GAP: Duration = Duration::from_millis(35);
+
 #[derive(Default)]
 pub struct PointerInertia {
     x: Inertia,
     y: Inertia,
+    pending: Option<(f64, f64, Instant)>,
 }
 impl PointerInertia {
     pub fn active(&self) -> bool {
         self.x.active() || self.y.active()
     }
     pub fn stop(&mut self) {
-        self.x.stop();
-        self.y.stop();
+        *self = Self::default();
     }
     pub fn record(&mut self, dx: f64, dy: f64, now: Instant) {
-        self.x.record(Some(Mode::HorizontalScroll), dx, now);
-        self.y.record(Some(Mode::Scroll), dy, now);
+        if dx.hypot(dy) < 2.0 {
+            self.stop();
+            return;
+        }
+        // A sample contributes to launch velocity only after another sample
+        // confirms motion in the same direction. Cursor output is independent.
+        if let Some((px, py, at)) = self.pending
+            && now.saturating_duration_since(at) <= POINTER_SAMPLE_GAP
+            && px * dx + py * dy > 0.0
+        {
+            self.x.record(Some(Mode::HorizontalScroll), px, at);
+            self.y.record(Some(Mode::Scroll), py, at);
+        } else {
+            self.stop();
+        }
+        self.pending = Some((dx, dy, now));
     }
-    pub fn release(&mut self, now: Instant) -> bool {
-        let gain = travel_gain(self.x.travel.hypot(self.y.travel), 12.0, 120.0);
+    pub fn release(&mut self, now: Instant, minimum: f64, strength: f64) -> bool {
+        if strength == 0.0
+            || self
+                .pending
+                .take()
+                .is_none_or(|(_, _, at)| now.saturating_duration_since(at) > POINTER_SAMPLE_GAP)
+        {
+            self.stop();
+            return false;
+        }
+        let gain = travel_gain(self.x.travel.hypot(self.y.travel), minimum, minimum + 108.0);
         self.x.velocity *= gain;
         self.y.velocity *= gain;
         if self.x.velocity.hypot(self.y.velocity) < 120.0 {
             self.stop();
             return false;
         }
+        self.x.velocity *= strength;
+        self.y.velocity *= strength;
         let x = self.x.release_with_threshold(now, 0.0);
         let y = self.y.release_with_threshold(now, 0.0);
         x || y
@@ -186,7 +213,7 @@ mod tests {
             pointer.record(1.0, 1.0, now);
         }
         assert!(!wheel.release(t + Duration::from_millis(10)));
-        assert!(!pointer.release(t + Duration::from_millis(10)));
+        assert!(!pointer.release(t + Duration::from_millis(10), 12.0, 1.0));
         assert_eq!(travel_gain(12.0, 12.0, 120.0), 0.0);
         assert_eq!(travel_gain(120.0, 12.0, 120.0), 1.0);
         assert_eq!(travel_gain(1200.0, 12.0, 120.0), 1.0);
@@ -213,11 +240,44 @@ mod tests {
         let mut pointer = PointerInertia {
             x: make(60.0),
             y: make(30.0),
+            pending: Some((24.0, 12.0, t)),
         };
         pointer.y.velocity = 1000.0;
-        assert!(pointer.release(t));
+        assert!(pointer.release(t, 12.0, 1.0));
         assert!((pointer.y.velocity / pointer.x.velocity - 0.5).abs() < 1e-10);
         assert!(pointer.x.velocity < 2000.0);
+    }
+    #[test]
+    fn isolated_lift_motion_cannot_restart_or_accelerate_inertia() {
+        let t = Instant::now();
+        let flick = || {
+            let mut pointer = PointerInertia::default();
+            for i in 0..6 {
+                pointer.record(24.0, 0.0, t + Duration::from_millis(i * 8));
+            }
+            pointer
+        };
+        let now = t + Duration::from_millis(48);
+        let mut stopped = flick();
+        stopped.record(1.0, 0.0, now);
+        stopped.record(100.0, 0.0, now + Duration::from_millis(8));
+        assert!(!stopped.release(now + Duration::from_millis(9), 12.0, 1.0));
+
+        let mut normal = flick();
+        let mut spike = flick();
+        normal.record(24.0, 0.0, now);
+        spike.record(100.0, 0.0, now);
+        assert!(normal.release(now, 12.0, 1.0));
+        assert!(spike.release(now, 12.0, 1.0));
+        assert_eq!(normal.x.velocity, spike.x.velocity);
+        let mut below_threshold = flick();
+        assert!(!below_threshold.release(now, 200.0, 1.0));
+        let mut disabled = flick();
+        assert!(!disabled.release(now, 12.0, 0.0));
+        let mut stronger = flick();
+        stronger.record(24.0, 0.0, now);
+        assert!(stronger.release(now, 12.0, 1.5));
+        assert_eq!(stronger.x.velocity, normal.x.velocity * 1.5);
     }
     #[test]
     fn pointer_keeps_subpixel_minor_axis_and_direction_after_release() {
@@ -226,7 +286,7 @@ mod tests {
         for i in 0..6 {
             pointer.record(24.0, 0.48, t + Duration::from_millis(i * 8));
         }
-        assert!(pointer.release(t + Duration::from_millis(40)));
+        assert!(pointer.release(t + Duration::from_millis(40), 12.0, 1.0));
         let (dx, dy) = pointer
             .tick_precise(t + Duration::from_millis(42), 5.0)
             .unwrap();
@@ -241,7 +301,7 @@ mod tests {
             for i in 0..6 {
                 p.record(24.0, -12.0, t + Duration::from_millis(i * 8));
             }
-            assert!(p.release(t + Duration::from_millis(40)));
+            assert!(p.release(t + Duration::from_millis(40), 12.0, 1.0));
             p
         };
         let mut fine = make();
@@ -271,7 +331,7 @@ mod tests {
         for i in 0..6 {
             pointer.record(24.0, -24.0, t + Duration::from_millis(i * 8));
         }
-        assert!(pointer.release(t + Duration::from_millis(40)));
+        assert!(pointer.release(t + Duration::from_millis(40), 12.0, 1.0));
         let first = pointer.tick(t + Duration::from_millis(56), 5.0).unwrap();
         let next = pointer.tick(t + Duration::from_millis(72), 5.0).unwrap();
         assert!(matches!(first, Effect::Move { dx, dy } if dx > 0 && dy < 0));

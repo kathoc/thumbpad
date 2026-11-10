@@ -1,6 +1,6 @@
 #define AppName "Thumbpad"
 #ifndef AppVersion
-  #define AppVersion "0.1.9"
+  #define AppVersion "0.1.10"
 #endif
 #ifndef BuildDir
   #define BuildDir "..\target\release"

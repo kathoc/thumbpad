@@ -21,7 +21,7 @@ use windows::{
 };
 enum Command {
     Move(u64, i32, i32),
-    Start(u64, PointerInertia, f64),
+    Start(u64, Box<PointerInertia>, f64),
     Stop(u64),
     Shutdown,
 }
@@ -60,7 +60,7 @@ impl Client {
             .tx
             .send(Command::Start(
                 self.generation.load(Ordering::Acquire),
-                motion,
+                Box::new(motion),
                 decay,
             ))
             .is_err()
@@ -218,7 +218,7 @@ pub fn spawn() -> Result<(Client, JoinHandle<()>)> {
                         }
                         run = Some(Run {
                             generation,
-                            motion,
+                            motion: *motion,
                             decay,
                             last: Instant::now(),
                         });

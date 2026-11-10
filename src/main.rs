@@ -580,7 +580,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         }
                     } else if was_physical && a.enabled {
                         let scroll = a.config.inertia_enabled && a.inertia.release(now);
-                        let pointer = trackball && a.pointer_inertia.release(now);
+                        let pointer = trackball
+                            && a.pointer_inertia.release(
+                                now,
+                                a.config.pointer_inertia_min_travel_px,
+                                a.config.pointer_inertia_strength,
+                            );
                         if pointer && let Some(worker) = GLIDE.get() {
                             worker.start(
                                 std::mem::take(&mut a.pointer_inertia),

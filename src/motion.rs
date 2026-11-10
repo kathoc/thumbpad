@@ -10,6 +10,7 @@ pub enum Mode {
 }
 #[derive(Clone, Copy)]
 pub struct Tuning {
+    pub pointer_deadband: f64,
     pub drag_x: f64,
     pub drag_y: f64,
     pub wheel: f64,
@@ -42,23 +43,40 @@ impl Motion {
         let changed = self.mode != mode || self.epoch != epoch;
         self.mode = mode;
         self.epoch = epoch;
-        self.previous = point;
         if mode == Mode::Off
             || changed
             || old.is_none()
             || point.is_none()
             || old.unwrap().0 != point.unwrap().0
         {
+            self.previous = point;
             self.remainder = [0.0; 2];
             return None;
         }
         let (_, x, y) = point.unwrap();
         let (_, ox, oy) = old.unwrap();
+        self.previous = point;
         match mode {
             Mode::Off => None,
             Mode::Drag | Mode::Pointer => {
-                self.remainder[0] += (x - ox) * tuning.drag_x;
-                self.remainder[1] += (y - oy) * tuning.drag_y;
+                let dx = (x - ox) * tuning.drag_x;
+                let dy = (y - oy) * tuning.drag_y;
+                let distance = dx.hypot(dy);
+                if distance <= tuning.pointer_deadband {
+                    self.previous = old;
+                    return None;
+                }
+                let scale = 1.0 - tuning.pointer_deadband / distance;
+                if tuning.pointer_deadband > 0.0 {
+                    // Keep a spatial margin without buffering reports or averaging movement.
+                    self.previous = Some((
+                        point.unwrap().0,
+                        ox + (x - ox) * scale,
+                        oy + (y - oy) * scale,
+                    ));
+                }
+                self.remainder[0] += dx * scale;
+                self.remainder[1] += dy * scale;
                 let dx = self.remainder[0].round() as i32;
                 let dy = self.remainder[1].round() as i32;
                 self.remainder[0] -= dx as f64;
@@ -85,6 +103,24 @@ impl Motion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn trackball_jitter_does_not_accumulate_and_motion_responds_in_the_same_report() {
+        let mut motion = Motion::default();
+        let tuning = Tuning {
+            pointer_deadband: 2.0,
+            drag_x: 1000.0,
+            drag_y: 1000.0,
+            ..t()
+        };
+        let mut feed = |x| motion.feed(Mode::Pointer, 0, Some((1, x, 0.5)), tuning);
+        assert_eq!(feed(0.5), None);
+        for _ in 0..20 {
+            assert_eq!(feed(0.501), None);
+            assert_eq!(feed(0.499), None);
+        }
+        assert_eq!(feed(0.510), Some(Effect::Move { dx: 8, dy: 0 }));
+        assert_eq!(feed(0.510), None);
+    }
     #[test]
     fn trackball_pointer_moves_without_a_click_key_and_rebases_on_lift() {
         let mut m = Motion::default();
@@ -119,6 +155,7 @@ mod tests {
     }
     fn t() -> Tuning {
         Tuning {
+            pointer_deadband: 0.0,
             drag_x: 1000.0,
             drag_y: 1000.0,
             wheel: 2400.0,
