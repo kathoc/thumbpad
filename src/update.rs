@@ -17,6 +17,13 @@ type Fallible<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 pub const REPOSITORY: &str = "kathoc/thumbpad";
 const ASSET: &str = "thumbpad-setup-x64.exe";
 static CHECKING: AtomicBool = AtomicBool::new(false);
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PointerMode {
+    #[default]
+    Mouse,
+    Trackball,
+}
 #[derive(Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -33,6 +40,8 @@ pub struct Config {
     pub scroll_horizontal_invert: bool,
     pub inertia_enabled: bool,
     pub inertia_decay: f64,
+    pub pointer_mode: PointerMode,
+    pub pointer_inertia_decay: f64,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -50,6 +59,8 @@ impl Default for Config {
             scroll_horizontal_invert: true,
             inertia_enabled: true,
             inertia_decay: 5.0,
+            pointer_mode: PointerMode::Mouse,
+            pointer_inertia_decay: 5.0,
         }
     }
 }
@@ -68,6 +79,8 @@ impl Config {
             || self.edge_grace_ms > 5000
             || !self.inertia_decay.is_finite()
             || !(1.0..=20.0).contains(&self.inertia_decay)
+            || !self.pointer_inertia_decay.is_finite()
+            || !(1.0..=20.0).contains(&self.pointer_inertia_decay)
             || ![
                 self.drag_pixels_per_pad_width,
                 self.drag_pixels_per_pad_height,
@@ -121,6 +134,8 @@ impl Config {
                             "scroll_horizontal_invert",
                             "inertia_enabled",
                             "inertia_decay",
+                            "pointer_mode",
+                            "pointer_inertia_decay",
                         ]
                         .iter()
                         .any(|key| value.get(key).is_none())
@@ -377,6 +392,16 @@ pub fn start_scheduler() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pointer_mode_defaults_to_mouse_and_trackball_is_explicit() {
+        assert_eq!(Config::default().pointer_mode, PointerMode::Mouse);
+        let config: Config =
+            serde_json::from_str(r#"{"pointer_mode":"trackball","pointer_inertia_decay":7.0}"#)
+                .unwrap();
+        assert_eq!(config.pointer_mode, PointerMode::Trackball);
+        assert!(config.validate().is_ok());
+        assert!(serde_json::from_str::<Config>(r#"{"pointer_mode":"unknown"}"#).is_err());
+    }
     #[test]
     fn reversed_scroll_defaults_and_saved_direction_preferences() {
         let defaults: Config = serde_json::from_str("{}").unwrap();

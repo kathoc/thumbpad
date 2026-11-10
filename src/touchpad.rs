@@ -486,7 +486,7 @@ impl Devices {
         );
         let mut effects = Vec::new();
         let mut complete = false;
-        device.gate.continuing = mode != Mode::Off;
+        device.gate.continuing = matches!(mode, Mode::Drag | Mode::Scroll | Mode::HorizontalScroll);
         for report in reports.chunks_exact_mut(size) {
             if device.report(report) {
                 complete = true;

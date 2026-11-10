@@ -4,6 +4,7 @@ pub enum Mode {
     #[default]
     Off,
     Drag,
+    Pointer,
     Scroll,
     HorizontalScroll,
 }
@@ -55,7 +56,7 @@ impl Motion {
         let (_, ox, oy) = old.unwrap();
         match mode {
             Mode::Off => None,
-            Mode::Drag => {
+            Mode::Drag | Mode::Pointer => {
                 self.remainder[0] += (x - ox) * tuning.drag_x;
                 self.remainder[1] += (y - oy) * tuning.drag_y;
                 let dx = self.remainder[0].round() as i32;
@@ -84,6 +85,18 @@ impl Motion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn trackball_pointer_moves_without_a_click_key_and_rebases_on_lift() {
+        let mut m = Motion::default();
+        assert_eq!(m.feed(Mode::Pointer, 1, Some((1, 0.5, 0.5)), t()), None);
+        assert_eq!(
+            m.feed(Mode::Pointer, 1, Some((1, 0.6, 0.4)), t()),
+            Some(Effect::Move { dx: 100, dy: -100 })
+        );
+        m.feed(Mode::Pointer, 1, None, t());
+        assert_eq!(m.feed(Mode::Pointer, 1, Some((2, 0.1, 0.9)), t()), None);
+        assert_eq!(m.feed(Mode::Off, 2, Some((2, 0.2, 0.8)), t()), None);
+    }
     #[test]
     fn horizontal_scroll_rightward_drag_scrolls_left_and_can_be_reversed() {
         let mut m = Motion::default();

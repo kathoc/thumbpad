@@ -1,9 +1,9 @@
 //! Key ownership is fixed at the first physical down, including across repeats.
 #[derive(Default)]
 pub struct Engine {
-    down: [bool; 6],
-    captured: [bool; 6],
-    held: [bool; 6],
+    down: [bool; 8],
+    captured: [bool; 8],
+    held: [bool; 8],
 }
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Button {
@@ -21,7 +21,7 @@ impl Engine {
         match i {
             0 | 1 => Some(Button::Left),
             2 | 3 => Some(Button::Right),
-            5 => Some(Button::Middle),
+            5 | 7 => Some(Button::Middle),
             _ => None,
         }
     }
@@ -77,7 +77,7 @@ impl Engine {
                 down: false,
             })
             .collect();
-        self.held = [false; 6];
+        self.held = [false; 8];
         actions
     }
     pub fn reset(&mut self) -> Vec<Action> {
@@ -89,15 +89,41 @@ impl Engine {
         self.held
             .iter()
             .enumerate()
-            .any(|(i, held)| i != 4 && *held)
+            .any(|(i, held)| i != 4 && i != 6 && *held)
     }
     pub fn scrolling(&self) -> bool {
-        self.held[4]
+        self.held[4] || self.held[6]
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn l_and_m_aliases_share_scroll_and_middle_ownership() {
+        let mut e = Engine::default();
+        e.key(4, true, true);
+        assert_eq!(e.key(6, true, true), (true, None));
+        e.key(4, false, true);
+        assert!(e.scrolling());
+        e.key(6, false, true);
+        assert!(!e.scrolling());
+        assert_eq!(
+            e.key(7, true, true).1,
+            Some(Action {
+                button: Button::Middle,
+                down: true
+            })
+        );
+        assert_eq!(e.key(5, true, true), (true, None));
+        assert_eq!(e.key(7, false, false), (true, None));
+        assert_eq!(
+            e.key(5, false, false).1,
+            Some(Action {
+                button: Button::Middle,
+                down: false
+            })
+        );
+    }
     #[test]
     fn c_holds_and_releases_middle_button_including_pause() {
         let mut e = Engine::default();

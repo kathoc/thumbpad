@@ -103,9 +103,61 @@ impl Inertia {
         }
     }
 }
+#[derive(Default)]
+pub struct PointerInertia {
+    x: Inertia,
+    y: Inertia,
+}
+impl PointerInertia {
+    pub fn active(&self) -> bool {
+        self.x.active() || self.y.active()
+    }
+    pub fn stop(&mut self) {
+        self.x.stop();
+        self.y.stop();
+    }
+    pub fn record(&mut self, dx: f64, dy: f64, now: Instant) {
+        self.x.record(Some(Mode::HorizontalScroll), dx, now);
+        self.y.record(Some(Mode::Scroll), dy, now);
+    }
+    pub fn release(&mut self, now: Instant) -> bool {
+        let x = self.x.release(now);
+        let y = self.y.release(now);
+        x || y
+    }
+    pub fn tick(&mut self, now: Instant, decay: f64) -> Option<Effect> {
+        let dx = match self.x.tick(now, decay) {
+            Some(Effect::HorizontalWheel(d)) => d,
+            _ => 0,
+        };
+        let dy = match self.y.tick(now, decay) {
+            Some(Effect::Wheel(d)) => d,
+            _ => 0,
+        };
+        (dx != 0 || dy != 0).then_some(Effect::Move { dx, dy })
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pointer_trackball_preserves_2d_direction_and_stops_on_retouch() {
+        let t = Instant::now();
+        let mut pointer = PointerInertia::default();
+        for i in 0..6 {
+            pointer.record(24.0, -24.0, t + Duration::from_millis(i * 8));
+        }
+        assert!(pointer.release(t + Duration::from_millis(40)));
+        let first = pointer.tick(t + Duration::from_millis(56), 5.0).unwrap();
+        let next = pointer.tick(t + Duration::from_millis(72), 5.0).unwrap();
+        assert!(matches!(first, Effect::Move { dx, dy } if dx > 0 && dy < 0));
+        assert!(
+            matches!((first, next), (Effect::Move { dx: a, .. }, Effect::Move { dx: b, .. }) if a > b)
+        );
+        pointer.stop();
+        assert!(!pointer.active());
+        assert_eq!(pointer.tick(t + Duration::from_millis(88), 5.0), None);
+    }
     fn flick(axis: Mode, delta: f64, t: Instant) -> Inertia {
         let mut inertia = Inertia::default();
         for i in 0..6 {

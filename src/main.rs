@@ -32,6 +32,7 @@ const SETTINGS: usize = 107;
 const INVERT_SCROLL: usize = 108;
 const INVERT_HSCROLL: usize = 109;
 const INERTIA_ENABLED: usize = 110;
+const POINTER_MODE: usize = 111;
 const INERTIA_TIMER: usize = 2;
 struct App {
     devices: touchpad::Devices,
@@ -40,6 +41,7 @@ struct App {
     config: update::Config,
     hwnd: HWND,
     inertia: inertia::Inertia,
+    pointer_inertia: inertia::PointerInertia,
 }
 thread_local! { static APP: RefCell<Option<App>> = const { RefCell::new(None) }; }
 thread_local! { static ENGINE: RefCell<Engine> = RefCell::new(Engine::default()); }
@@ -56,6 +58,8 @@ static HAS_CONTACTS: AtomicBool = AtomicBool::new(false);
 static SCROLL_EVENTS: AtomicU64 = AtomicU64::new(0);
 static MOUSE_THREAD: AtomicU32 = AtomicU32::new(0);
 static MOUSE_READY: AtomicBool = AtomicBool::new(false);
+static TRACKBALL_MODE: AtomicBool = AtomicBool::new(false);
+static EXCEL_SCROLL_EVENTS: AtomicU64 = AtomicU64::new(0);
 const RECONFIGURE_MOUSE: u32 = WM_APP + 10;
 fn publish_interaction(dragging: bool, scrolling: bool, shift: bool) {
     let flags =
@@ -91,6 +95,13 @@ fn flip_setting(config: &mut update::Config, command: usize) {
         INVERT_SCROLL => config.scroll_invert = !config.scroll_invert,
         INVERT_HSCROLL => config.scroll_horizontal_invert = !config.scroll_horizontal_invert,
         INERTIA_ENABLED => config.inertia_enabled = !config.inertia_enabled,
+        POINTER_MODE => {
+            config.pointer_mode = if config.pointer_mode == update::PointerMode::Mouse {
+                update::PointerMode::Trackball
+            } else {
+                update::PointerMode::Mouse
+            }
+        }
         _ => {}
     }
 }
@@ -120,6 +131,45 @@ unsafe fn inject(action: &Action) -> bool {
     };
     SendInput(&[input], size_of::<INPUT>() as i32) == 1
 }
+thread_local! { static EXCEL_WHEEL: std::cell::Cell<(isize, i32)> = const { std::cell::Cell::new((0, 0)) }; }
+fn excel_wheel_parameters(horizontal: i32, point: POINT) -> (WPARAM, LPARAM) {
+    // Excel uses Ctrl+Shift+vertical wheel: positive wheel scrolls left.
+    let vertical = -horizontal.clamp(-32760, 32760);
+    let wp = ((vertical as i16 as u16 as u32) << 16) | 0x000c;
+    let lp = point.x as i16 as u16 as u32 | ((point.y as i16 as u16 as u32) << 16);
+    (WPARAM(wp as usize), LPARAM(lp as isize))
+}
+unsafe fn excel_horizontal_scroll(delta: i32) -> bool {
+    let mut point = POINT::default();
+    if GetCursorPos(&mut point).is_err() {
+        return false;
+    }
+    let target = WindowFromPoint(point);
+    if target.0.is_null() {
+        return false;
+    }
+    let root = GetAncestor(target, GA_ROOT);
+    let mut name = [0u16; 64];
+    let len = GetClassNameW(root, &mut name).max(0) as usize;
+    if !String::from_utf16_lossy(&name[..len]).eq_ignore_ascii_case("XLMAIN") {
+        return false;
+    }
+    let whole = EXCEL_WHEEL.with(|state| {
+        let (previous, remainder) = state.get();
+        let total = if previous == target.0 as isize {
+            remainder
+        } else {
+            0
+        } + delta;
+        state.set((target.0 as isize, total % 120));
+        (total / 120) * 120
+    });
+    if whole == 0 {
+        return true;
+    }
+    let (wp, lp) = excel_wheel_parameters(whole, point);
+    PostMessageW(Some(target), WM_MOUSEWHEEL, wp, lp).is_ok()
+}
 unsafe fn inject_motion(effect: motion::Effect) {
     let input = match effect {
         motion::Effect::Move { dx, dy } => MOUSEINPUT {
@@ -138,6 +188,10 @@ unsafe fn inject_motion(effect: motion::Effect) {
         }
         motion::Effect::HorizontalWheel(delta) => {
             SCROLL_EVENTS.fetch_add(1, Ordering::Relaxed);
+            if excel_horizontal_scroll(delta) {
+                EXCEL_SCROLL_EVENTS.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
             MOUSEINPUT {
                 mouseData: delta as u32,
                 dwFlags: MOUSEEVENTF_HWHEEL,
@@ -161,12 +215,19 @@ unsafe fn inject_motion(effect: motion::Effect) {
 impl App {
     unsafe fn stop_inertia(&mut self) {
         self.inertia.stop();
+        self.pointer_inertia.stop();
         let _ = KillTimer(Some(self.hwnd), INERTIA_TIMER);
     }
     unsafe fn release(&mut self, reset: bool) {
         self.stop_inertia();
         CLICK_ACTIVE.store(false, Ordering::Relaxed);
         POINTER_BLOCK.store(false, Ordering::Relaxed);
+        TRACKBALL_MODE.store(false, Ordering::Relaxed);
+        HAS_CONTACTS.store(false, Ordering::Relaxed);
+        let thread = MOUSE_THREAD.load(Ordering::Relaxed);
+        if thread != 0 {
+            let _ = PostThreadMessageW(thread, RECONFIGURE_MOUSE, WPARAM(0), LPARAM(0));
+        }
         publish_interaction(false, false, false);
         let actions = ENGINE.with_borrow_mut(|e| if reset { e.reset() } else { e.release() });
         for a in actions {
@@ -176,6 +237,10 @@ impl App {
         }
     }
     fn publish(&self) {
+        TRACKBALL_MODE.store(
+            self.enabled && self.config.pointer_mode == update::PointerMode::Trackball,
+            Ordering::Relaxed,
+        );
         let contacts = self.enabled && self.devices.has_contacts();
         if HAS_CONTACTS.swap(contacts, Ordering::Relaxed) != contacts {
             let id = MOUSE_THREAD.load(Ordering::Relaxed);
@@ -199,7 +264,7 @@ impl App {
     }
     unsafe fn refresh(&self) {
         let text = format!(
-            "Thumbpad {}  /  {}\r\n\r\nTouch: F / J = left, D / K = right, C = middle, S = vertical scroll.\r\nHold a click key to drag; lift and reposition without releasing the key.\r\nShift+S = horizontal scroll (rightward motion scrolls left by default).\r\nCtrl+Alt+F12 pauses. Change scroll direction from the tray menu.\r\nCtrl / Alt / Win shortcuts pass through.\r\n\r\n{}\r\n\r\nClicks: {}   Input / hook failures: {}\r\nMax keyboard hook processing: {} us (not end-to-end latency)\r\n\r\nAutomatic update checks: {} (startup and every 24 hours)\r\nUpdates require confirmation before installation.\r\n\r\nRight-click the tray icon for settings and controls.\r\nClosing this window keeps Thumbpad running.",
+            "Thumbpad {}  /  {}\r\n\r\nTouch: F/J = left, D/K = right, C/M = middle, S/L = scroll.\r\nHold a click key to drag; lift and reposition without releasing the key.\r\nShift+S or Shift+L = horizontal scroll (rightward motion scrolls left by default).\r\nCtrl+Alt+F12 pauses. Change scroll direction from the tray menu.\r\nCtrl / Alt / Win shortcuts pass through.\r\n\r\n{}\r\n\r\nClicks: {}   Input / hook failures: {}\r\nMax keyboard hook processing: {} us (not end-to-end latency)\r\n\r\nAutomatic update checks: {} (startup and every 24 hours)\r\nUpdates require confirmation before installation.\r\n\r\nRight-click the tray icon for settings and controls.\r\nClosing this window keeps Thumbpad running.",
             env!("CARGO_PKG_VERSION"),
             if self.enabled { "ENABLED" } else { "PAUSED" },
             self.devices.summary(),
@@ -235,6 +300,19 @@ impl App {
             } else {
                 "OFF"
             }
+        );
+        let text = format!(
+            "{text}\r\nPointer mode: {} / Excel horizontal samples: {}",
+            if self.config.pointer_mode == update::PointerMode::Trackball {
+                if self.pointer_inertia.active() {
+                    "TRACKBALL (rolling)"
+                } else {
+                    "TRACKBALL"
+                }
+            } else {
+                "MOUSE"
+            },
+            EXCEL_SCROLL_EVENTS.load(Ordering::Relaxed)
         );
         let _ = SetWindowTextW(self.label, PCWSTR(wide(&text).as_ptr()));
     }
@@ -302,6 +380,8 @@ fn binding(vk: u32) -> Option<usize> {
         0x44 => Some(3),
         0x53 => Some(4),
         0x43 => Some(5),
+        0x4c => Some(6),
+        0x4d => Some(7),
         _ => None,
     }
 }
@@ -313,7 +393,8 @@ unsafe extern "system" fn mouse(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
         let event = &*(lp.0 as *const MSLLHOOKSTRUCT);
         if event.flags & LLMHF_INJECTED == 0 {
             let block = POINTER_BLOCK.load(Ordering::Relaxed)
-                || (INTERACTION.load(Ordering::Relaxed) & 3 != 0
+                || ((INTERACTION.load(Ordering::Relaxed) & 3 != 0
+                    || TRACKBALL_MODE.load(Ordering::Relaxed))
                     && HAS_CONTACTS.load(Ordering::Relaxed));
             if block {
                 BLOCKED_MOVES.fetch_add(1, Ordering::Relaxed);
@@ -378,7 +459,7 @@ unsafe fn tray(hwnd: HWND, add: bool) {
         hIcon: LoadIconW(None, IDI_APPLICATION).unwrap_or_default(),
         ..Default::default()
     };
-    let tip = wide("Thumbpad - F/J: left, D/K: right, C: middle, S: scroll");
+    let tip = wide("Thumbpad - F/J: left, D/K: right, C/M: middle, S/L: scroll");
     data.szTip[..tip.len()].copy_from_slice(&tip);
     let _ = Shell_NotifyIconW(if add { NIM_ADD } else { NIM_DELETE }, &data);
 }
@@ -395,7 +476,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_INPUT => {
             let effects = APP.with_borrow_mut(|app| {
                 if let Some(a) = app {
-                    let (mode, epoch) = interaction();
+                    let (key_mode, epoch) = interaction();
+                    let trackball = a.config.pointer_mode == update::PointerMode::Trackball;
+                    let mode = if key_mode == motion::Mode::Off && trackball {
+                        motion::Mode::Pointer
+                    } else {
+                        key_mode
+                    };
                     let was_physical = a.devices.physical_contacts();
                     let (effects, complete) = a.devices.input(
                         HRAWINPUT(lp.0 as _),
@@ -405,7 +492,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     );
                     let now = Instant::now();
                     if a.devices.physical_contacts() {
-                        if !was_physical || a.inertia.active() {
+                        if !was_physical || a.inertia.active() || a.pointer_inertia.active() {
                             a.stop_inertia();
                         }
                         if complete && a.enabled {
@@ -422,15 +509,29 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                                 })
                                 .sum();
                             a.inertia.record(axis, delta, now);
+                            if trackball
+                                && matches!(mode, motion::Mode::Pointer | motion::Mode::Drag)
+                            {
+                                let (dx, dy) =
+                                    effects.iter().fold((0.0, 0.0), |(x, y), e| match e {
+                                        motion::Effect::Move { dx, dy } => {
+                                            (x + *dx as f64, y + *dy as f64)
+                                        }
+                                        _ => (x, y),
+                                    });
+                                a.pointer_inertia.record(dx, dy, now);
+                            } else {
+                                a.pointer_inertia.stop();
+                            }
                         }
-                    } else if was_physical
-                        && a.enabled
-                        && a.config.inertia_enabled
-                        && a.inertia.release(now)
-                        && SetTimer(Some(hwnd), INERTIA_TIMER, 16, None) == 0
-                    {
-                        a.inertia.stop();
-                        ERRORS.fetch_add(1, Ordering::Relaxed);
+                    } else if was_physical && a.enabled {
+                        let scroll = a.config.inertia_enabled && a.inertia.release(now);
+                        let pointer = trackball && a.pointer_inertia.release(now);
+                        if (scroll || pointer) && SetTimer(Some(hwnd), INERTIA_TIMER, 16, None) == 0
+                        {
+                            a.stop_inertia();
+                            ERRORS.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                     a.publish();
                     effects
@@ -463,18 +564,33 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_TIMER if wp.0 == INERTIA_TIMER => {
             let effect = APP.with_borrow_mut(|app| {
                 let a = app.as_mut()?;
-                if !a.enabled || !a.config.inertia_enabled || a.devices.physical_contacts() {
+                if !a.enabled || a.devices.physical_contacts() {
                     a.stop_inertia();
-                    return None;
+                    return Some(Vec::new());
                 }
-                let effect = a.inertia.tick(Instant::now(), a.config.inertia_decay);
-                if !a.inertia.active() {
+                if !a.config.inertia_enabled {
+                    a.inertia.stop();
+                }
+                if a.config.pointer_mode != update::PointerMode::Trackball {
+                    a.pointer_inertia.stop();
+                }
+                let now = Instant::now();
+                let effects: Vec<_> = [
+                    a.inertia.tick(now, a.config.inertia_decay),
+                    a.pointer_inertia.tick(now, a.config.pointer_inertia_decay),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                if !a.inertia.active() && !a.pointer_inertia.active() {
                     let _ = KillTimer(Some(hwnd), INERTIA_TIMER);
                 }
-                effect
+                Some(effects)
             });
-            if let Some(effect) = effect {
-                inject_motion(effect);
+            if let Some(effects) = effect {
+                for effect in effects {
+                    inject_motion(effect);
+                }
             }
             return LRESULT(0);
         }
@@ -506,7 +622,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     let _ = PostMessageW(Some(hwnd), SHOW, WPARAM(0), LPARAM(0));
                 }
                 UPDATE => update::check_async(true),
-                command @ (AUTO_UPDATE | INVERT_SCROLL | INVERT_HSCROLL | INERTIA_ENABLED) => {
+                command @ (AUTO_UPDATE | INVERT_SCROLL | INVERT_HSCROLL | INERTIA_ENABLED
+                | POINTER_MODE) => {
                     let error = APP.with_borrow_mut(|app| {
                         let a = app.as_mut()?;
                         flip_setting(&mut a.config, command);
@@ -517,6 +634,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         if command != AUTO_UPDATE {
                             a.stop_inertia();
                         }
+                        a.publish();
                         a.refresh();
                         error
                     });
@@ -564,6 +682,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                             w!("Edit settings (restart to apply)"),
                         );
                         let _ = AppendMenuW(menu, MF_STRING, UPDATE, w!("Check for updates"));
+                        let _ = AppendMenuW(
+                            menu,
+                            MF_STRING
+                                | if a.config.pointer_mode == update::PointerMode::Trackball {
+                                    MF_CHECKED
+                                } else {
+                                    MF_UNCHECKED
+                                },
+                            POINTER_MODE,
+                            w!("Trackball pointer mode (off = mouse)"),
+                        );
                         let _ = AppendMenuW(
                             menu,
                             MF_STRING
@@ -771,6 +900,7 @@ fn run() -> Result<()> {
                 config,
                 hwnd,
                 inertia: inertia::Inertia::default(),
+                pointer_inertia: inertia::PointerInertia::default(),
             })
         });
         let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard), Some(instance.into()), 0)?;
@@ -827,6 +957,18 @@ fn main() {
 #[cfg(test)]
 mod callback_tests {
     use super::*;
+    #[test]
+    fn excel_wheel_uses_ctrl_shift_and_correct_leftward_sign_without_key_injection() {
+        let (wp, lp) = excel_wheel_parameters(-120, POINT { x: -15, y: 500 });
+        assert_eq!(wp.0 & 0xffff, 0x000c);
+        assert_eq!(((wp.0 >> 16) & 0xffff) as u16 as i16, 120);
+        assert_eq!((lp.0 & 0xffff) as u16 as i16, -15);
+        assert_eq!(((lp.0 >> 16) & 0xffff) as u16 as i16, 500);
+        let (wp, _) = excel_wheel_parameters(120, POINT::default());
+        assert_eq!(((wp.0 >> 16) & 0xffff) as u16 as i16, -120);
+        assert_eq!(binding(0x4c), Some(6));
+        assert_eq!(binding(0x4d), Some(7));
+    }
     #[test]
     fn s_replaces_g_as_the_scroll_binding() {
         assert_eq!(binding(0x53), Some(4));

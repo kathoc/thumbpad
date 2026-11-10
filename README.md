@@ -22,9 +22,9 @@ Windows 11 x64 が対象です。ARM64 では x64 エミュレーション経由
 | --- | --- |
 | タッチパッドに触れながら F / J | 左クリック |
 | タッチパッドに触れながら D / K | 右クリック |
-| タッチパッドに触れながら C | センタークリック（中ボタン） |
-| タッチパッドに触れながら S を保持して上下に動かす | 上下スクロール |
-| タッチパッドに触れながら Shift + S を保持して左右に動かす | 左右スクロール（既定は右へ動かすと左スクロール） |
+| タッチパッドに触れながら C / M | センタークリック（中ボタン） |
+| タッチパッドに触れながら S / L を保持して上下に動かす | 上下スクロール |
+| タッチパッドに触れながら Shift + S / Shift + L を保持して左右に動かす | 左右スクロール（既定は右へ動かすと左スクロール） |
 | キーを押し続けて指を動かす | ドラッグ |
 | Ctrl / Alt / Win を伴うキー | 通常のショートカットとして通す |
 | Ctrl + Alt + F12 | 一時停止 / 再開 |
@@ -34,12 +34,15 @@ Windows 11 x64 が対象です。ARM64 では x64 エミュレーション経由
 ウィンドウを閉じても常駐します。完全終了は Exit を選択します。
 キーを押した時点で文字かクリックかを決め、指の離脱やキーリピートで途中から切り替えません。
 F と J を同時に押しても、両方を離すまで左ボタンを保持します。
-F/J/D/K/C/S を保持したまま指を離して置き直せます。保持中は500msの期限を設けず、端からも再開できます。
+F/J/D/K/C/M/S/L を保持したまま指を離して置き直せます。保持中は500msの期限を設けず、端からも再開できます。
 置き直した最初の位置は基準点として扱い、離す前の位置との差でカーソルやスクロールを飛ばしません。
 S を離すと指の移動による直接のスクロールを終了します。キーを先に押したまま接触しても、文字から操作へ途中では切り替えません。
 上下・左右とも既定で反転方向です。S保持中にShiftを押すと左右、離すと上下に切り替わります。
 G は通常の文字入力です。
 トレイの `Invert vertical scroll` / `Invert horizontal scroll` で方向を個別に変更できます。即時反映して保存され、再起動は不要です。
+Excelでは通常の左右ホイールの代わりに、Ctrl+Shift相当のホイールメッセージをExcelへ送ります。
+物理的なCtrl/Shiftキーの状態を書き換えず、他アプリの操作に影響させません。Excelでは1ノッチ単位にまとめます。
+Chromeなどでは通常の左右ホイールを使います。Excelの版・画面による動作は実機で確認してください。
 
 ### 慣性スクロール
 
@@ -48,6 +51,14 @@ S または Shift+S を押して指を弾き、パッドから指を離すと、
 静止してから指を離した場合は慣性を開始しません。一時停止・終了・画面ロック・スリープ等でも停止します。
 トレイの `Inertial scrolling` で有効・無効を切り替えられます。
 慣性が動いている間だけ16msのタイマーを使用し、停止したら解除します。長い処理停止後にまとめてスクロールを送ることは避けます。
+
+### ポインターのモード
+
+既定は通常のマウスモードです。トレイの `Trackball pointer mode (off = mouse)` をオンにすると、ポインターもトラックボール方式になります。
+指の移動でカーソルを動かし、指を離すと減速しながら継続します。パッドへ再接触すると慣性が止まります。
+オフに戻すと通常のマウスモードへ即時復帰し、選択は保存されます。通常の端の開始除外も維持します。
+スクロール用のS/Lを押している間はスクロールが優先され、ポインターは動きません。
+ポインターの減速は `pointer_inertia_decay`、直接移動量は既存の `drag_pixels_per_pad_width` / `drag_pixels_per_pad_height` で調整します。
 タッチパッドの「タップでクリック」を併用すると意図しない二重操作になる場合があります。
 
 キーを保持している間のドラッグ・スクロールは、HIDの移動量から入力を生成します。
@@ -96,7 +107,9 @@ S または Shift+S を押して指を弾き、パッドから指を離すと、
   "scroll_units_per_pad_width": 2400.0,
   "scroll_horizontal_invert": true,
   "inertia_enabled": true,
-  "inertia_decay": 5.0
+  "inertia_decay": 5.0,
+  "pointer_mode": "mouse",
+  "pointer_inertia_decay": 5.0
 }
 ```
 
@@ -107,7 +120,7 @@ S または Shift+S を押して指を弾き、パッドから指を離すと、
 左右スクロール量は `scroll_units_per_pad_width` で調整します。
 `inertia_decay` は1–20で、小さいほど慣性が長く、大きいほど早く減速します。慣性は最大3秒で終了します。
 既存の設定値は保持し、新しい項目の既定値だけをアップグレード時に追加します。
-現段階の割り当ては F/J/D/K/C/S と Shift+S 固定です。
+現段階の割り当ては F/J/D/K/C/M/S/L と Shift+S / Shift+L 固定です。
 
 ## 更新
 
@@ -172,5 +185,6 @@ GitHub Actions がテスト・ビルド・インストーラー作成を行い�
 - [Microsoft: Precision Touchpad collection](https://learn.microsoft.com/en-us/windows-hardware/design/component-guidelines/touchpad-windows-precision-touchpad-collection)
 - [Microsoft: LowLevelMouseProc](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelmouseproc)
 - [Microsoft: SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput)
+- [Microsoft: Excelのスクロール方法](https://support.microsoft.com/en-us/excel/move-or-scroll-through-a-worksheet)
 
 MIT License

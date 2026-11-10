@@ -6,7 +6,7 @@ This is a prototype validation record, not a cross-device compatibility claim.
 
 - `cargo fmt --check`: passed.
 - `cargo clippy --locked --all-targets -- -D warnings`: passed.
-- `cargo test --locked`: 30 passed, 0 failed (v0.1.3).
+- `cargo test --locked`: 35 passed, 0 failed (v0.1.4).
 - Optimized Windows x64 build: passed.
 - Inno Setup 6.7.4 installer compilation: passed.
 
@@ -42,6 +42,15 @@ detection, and the S binding with G passing through. Inertia feel needs user tes
 The v0.1.3 installer completed with exit 0 at the default installation path;
 the installed executable matched the release build, prior preferences were
 preserved, and inertia defaults were added (enabled, decay 5.0).
+v0.1.4 adds pointer trackball mode with mouse as the default, L/M aliases,
+and an Excel-specific Ctrl+Shift wheel-message path without global modifier
+injection. New tests cover 2D pointer momentum/cancellation, direct pointer mode,
+mode serialization, shared alias ownership, and Excel message signs/modifiers.
+The user confirmed horizontal scrolling in Chrome but reported failure in Excel
+before this compatibility path. Excel's resulting behavior still needs user verification.
+The v0.1.4 installer completed with exit 0, installed bytes matched the release
+build, and all previous preferences were preserved. Pointer mode remained `mouse`
+as the default; the trackball option and pointer decay default were added.
 
 ## Native UI checks
 
