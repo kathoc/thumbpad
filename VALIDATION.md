@@ -6,7 +6,7 @@ This is a prototype validation record, not a cross-device compatibility claim.
 
 - `cargo fmt --check`: passed.
 - `cargo clippy --locked --all-targets -- -D warnings`: passed.
-- `cargo test --locked`: 24 passed, 0 failed (v0.1.2).
+- `cargo test --locked`: 30 passed, 0 failed (v0.1.3).
 - Optimized Windows x64 build: passed.
 - Inno Setup 6.7.4 installer compilation: passed.
 
@@ -35,6 +35,13 @@ Shift axis switching with a fresh motion epoch. These are covered by four new te
 The installed copy was upgraded to v0.1.2 (exit 0), its executable hash matched
 the release build, and both inverted-direction settings were confirmed enabled
 on this PC at the user's request. Other existing settings were preserved.
+v0.1.3 changes the binding to S/Shift+S and adds velocity-based decaying momentum.
+New tests cover decay/termination, retouch cancellation, stale/stationary release,
+horizontal direction, long-timer-stall safety, axis reset, rejected physical-contact
+detection, and the S binding with G passing through. Inertia feel needs user testing.
+The v0.1.3 installer completed with exit 0 at the default installation path;
+the installed executable matched the release build, prior preferences were
+preserved, and inertia defaults were added (enabled, decay 5.0).
 
 ## Native UI checks
 

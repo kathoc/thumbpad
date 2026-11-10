@@ -31,6 +31,8 @@ pub struct Config {
     pub scroll_invert: bool,
     pub scroll_units_per_pad_width: f64,
     pub scroll_horizontal_invert: bool,
+    pub inertia_enabled: bool,
+    pub inertia_decay: f64,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -46,6 +48,8 @@ impl Default for Config {
             scroll_invert: true,
             scroll_units_per_pad_width: 2400.0,
             scroll_horizontal_invert: true,
+            inertia_enabled: true,
+            inertia_decay: 5.0,
         }
     }
 }
@@ -62,6 +66,8 @@ impl Config {
             || !self.edge_top_percent.is_finite()
             || !(0.0..=80.0).contains(&self.edge_top_percent)
             || self.edge_grace_ms > 5000
+            || !self.inertia_decay.is_finite()
+            || !(1.0..=20.0).contains(&self.inertia_decay)
             || ![
                 self.drag_pixels_per_pad_width,
                 self.drag_pixels_per_pad_height,
@@ -113,6 +119,8 @@ impl Config {
                             "scroll_invert",
                             "scroll_units_per_pad_width",
                             "scroll_horizontal_invert",
+                            "inertia_enabled",
+                            "inertia_decay",
                         ]
                         .iter()
                         .any(|key| value.get(key).is_none())

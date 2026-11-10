@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 #![allow(unsafe_op_in_unsafe_fn)]
 mod engine;
+mod inertia;
 mod motion;
 mod touchpad;
 mod update;
@@ -30,11 +31,15 @@ const STARTUP: usize = 106;
 const SETTINGS: usize = 107;
 const INVERT_SCROLL: usize = 108;
 const INVERT_HSCROLL: usize = 109;
+const INERTIA_ENABLED: usize = 110;
+const INERTIA_TIMER: usize = 2;
 struct App {
     devices: touchpad::Devices,
     enabled: bool,
     label: HWND,
     config: update::Config,
+    hwnd: HWND,
+    inertia: inertia::Inertia,
 }
 thread_local! { static APP: RefCell<Option<App>> = const { RefCell::new(None) }; }
 thread_local! { static ENGINE: RefCell<Engine> = RefCell::new(Engine::default()); }
@@ -85,6 +90,7 @@ fn flip_setting(config: &mut update::Config, command: usize) {
         AUTO_UPDATE => config.auto_update = !config.auto_update,
         INVERT_SCROLL => config.scroll_invert = !config.scroll_invert,
         INVERT_HSCROLL => config.scroll_horizontal_invert = !config.scroll_horizontal_invert,
+        INERTIA_ENABLED => config.inertia_enabled = !config.inertia_enabled,
         _ => {}
     }
 }
@@ -153,7 +159,12 @@ unsafe fn inject_motion(effect: motion::Effect) {
     }
 }
 impl App {
+    unsafe fn stop_inertia(&mut self) {
+        self.inertia.stop();
+        let _ = KillTimer(Some(self.hwnd), INERTIA_TIMER);
+    }
     unsafe fn release(&mut self, reset: bool) {
+        self.stop_inertia();
         CLICK_ACTIVE.store(false, Ordering::Relaxed);
         POINTER_BLOCK.store(false, Ordering::Relaxed);
         publish_interaction(false, false, false);
@@ -188,7 +199,7 @@ impl App {
     }
     unsafe fn refresh(&self) {
         let text = format!(
-            "Thumbpad {}  /  {}\r\n\r\nTouch: F / J = left, D / K = right, C = middle, G = vertical scroll.\r\nHold a click key to drag; lift and reposition without releasing the key.\r\nShift+G = horizontal scroll (rightward motion scrolls left by default).\r\nCtrl+Alt+F12 pauses. Change scroll direction from the tray menu.\r\nCtrl / Alt / Win shortcuts pass through.\r\n\r\n{}\r\n\r\nClicks: {}   Input / hook failures: {}\r\nMax keyboard hook processing: {} us (not end-to-end latency)\r\n\r\nAutomatic update checks: {} (startup and every 24 hours)\r\nUpdates require confirmation before installation.\r\n\r\nRight-click the tray icon for settings and controls.\r\nClosing this window keeps Thumbpad running.",
+            "Thumbpad {}  /  {}\r\n\r\nTouch: F / J = left, D / K = right, C = middle, S = vertical scroll.\r\nHold a click key to drag; lift and reposition without releasing the key.\r\nShift+S = horizontal scroll (rightward motion scrolls left by default).\r\nCtrl+Alt+F12 pauses. Change scroll direction from the tray menu.\r\nCtrl / Alt / Win shortcuts pass through.\r\n\r\n{}\r\n\r\nClicks: {}   Input / hook failures: {}\r\nMax keyboard hook processing: {} us (not end-to-end latency)\r\n\r\nAutomatic update checks: {} (startup and every 24 hours)\r\nUpdates require confirmation before installation.\r\n\r\nRight-click the tray icon for settings and controls.\r\nClosing this window keeps Thumbpad running.",
             env!("CARGO_PKG_VERSION"),
             if self.enabled { "ENABLED" } else { "PAUSED" },
             self.devices.summary(),
@@ -214,6 +225,16 @@ impl App {
                 "OFF"
             },
             BLOCKED_MOVES.load(Ordering::Relaxed)
+        );
+        let text = format!(
+            "{text}\r\nInertial scrolling: {} (touch the pad to stop)",
+            if self.inertia.active() {
+                "RUNNING"
+            } else if self.config.inertia_enabled {
+                "ON"
+            } else {
+                "OFF"
+            }
         );
         let _ = SetWindowTextW(self.label, PCWSTR(wide(&text).as_ptr()));
     }
@@ -244,14 +265,8 @@ unsafe extern "system" fn keyboard(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
         publish_interaction(dragging, scrolling, shift);
         return CallNextHookEx(None, code, wp, lp);
     }
-    let index = match k.vkCode {
-        0x46 => 0,
-        0x4A => 1,
-        0x4B => 2,
-        0x44 => 3,
-        0x47 => 4,
-        0x43 => 5,
-        _ => return CallNextHookEx(None, code, wp, lp),
+    let Some(index) = binding(k.vkCode) else {
+        return CallNextHookEx(None, code, wp, lp);
     };
     let start = Instant::now();
     let active = CLICK_ACTIVE.load(Ordering::Relaxed)
@@ -277,6 +292,17 @@ unsafe extern "system" fn keyboard(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
         LRESULT(1)
     } else {
         CallNextHookEx(None, code, wp, lp)
+    }
+}
+fn binding(vk: u32) -> Option<usize> {
+    match vk {
+        0x46 => Some(0),
+        0x4a => Some(1),
+        0x4b => Some(2),
+        0x44 => Some(3),
+        0x53 => Some(4),
+        0x43 => Some(5),
+        _ => None,
     }
 }
 // A low-level mouse hook has no device handle. This prototype gates physical
@@ -352,7 +378,7 @@ unsafe fn tray(hwnd: HWND, add: bool) {
         hIcon: LoadIconW(None, IDI_APPLICATION).unwrap_or_default(),
         ..Default::default()
     };
-    let tip = wide("Thumbpad - F/J: left, D/K: right, C: middle, G: scroll");
+    let tip = wide("Thumbpad - F/J: left, D/K: right, C: middle, S: scroll");
     data.szTip[..tip.len()].copy_from_slice(&tip);
     let _ = Shell_NotifyIconW(if add { NIM_ADD } else { NIM_DELETE }, &data);
 }
@@ -370,12 +396,42 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let effects = APP.with_borrow_mut(|app| {
                 if let Some(a) = app {
                     let (mode, epoch) = interaction();
-                    let effects = a.devices.input(
+                    let was_physical = a.devices.physical_contacts();
+                    let (effects, complete) = a.devices.input(
                         HRAWINPUT(lp.0 as _),
                         mode,
                         epoch,
                         a.config.motion_tuning(),
                     );
+                    let now = Instant::now();
+                    if a.devices.physical_contacts() {
+                        if !was_physical || a.inertia.active() {
+                            a.stop_inertia();
+                        }
+                        if complete && a.enabled {
+                            let axis = match mode {
+                                motion::Mode::Scroll | motion::Mode::HorizontalScroll => Some(mode),
+                                _ => None,
+                            };
+                            let delta: f64 = effects
+                                .iter()
+                                .filter_map(|e| match e {
+                                    motion::Effect::Wheel(d)
+                                    | motion::Effect::HorizontalWheel(d) => Some(*d as f64),
+                                    _ => None,
+                                })
+                                .sum();
+                            a.inertia.record(axis, delta, now);
+                        }
+                    } else if was_physical
+                        && a.enabled
+                        && a.config.inertia_enabled
+                        && a.inertia.release(now)
+                        && SetTimer(Some(hwnd), INERTIA_TIMER, 16, None) == 0
+                    {
+                        a.inertia.stop();
+                        ERRORS.fetch_add(1, Ordering::Relaxed);
+                    }
                     a.publish();
                     effects
                 } else {
@@ -403,6 +459,24 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     a.devices.clear();
                 }
             });
+        }
+        WM_TIMER if wp.0 == INERTIA_TIMER => {
+            let effect = APP.with_borrow_mut(|app| {
+                let a = app.as_mut()?;
+                if !a.enabled || !a.config.inertia_enabled || a.devices.physical_contacts() {
+                    a.stop_inertia();
+                    return None;
+                }
+                let effect = a.inertia.tick(Instant::now(), a.config.inertia_decay);
+                if !a.inertia.active() {
+                    let _ = KillTimer(Some(hwnd), INERTIA_TIMER);
+                }
+                effect
+            });
+            if let Some(effect) = effect {
+                inject_motion(effect);
+            }
+            return LRESULT(0);
         }
         WM_TIMER => {
             APP.with_borrow(|app| {
@@ -432,13 +506,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     let _ = PostMessageW(Some(hwnd), SHOW, WPARAM(0), LPARAM(0));
                 }
                 UPDATE => update::check_async(true),
-                command @ (AUTO_UPDATE | INVERT_SCROLL | INVERT_HSCROLL) => {
+                command @ (AUTO_UPDATE | INVERT_SCROLL | INVERT_HSCROLL | INERTIA_ENABLED) => {
                     let error = APP.with_borrow_mut(|app| {
                         let a = app.as_mut()?;
                         flip_setting(&mut a.config, command);
                         let error = a.config.save().err().map(|e| e.to_string());
                         if error.is_some() {
                             flip_setting(&mut a.config, command);
+                        }
+                        if command != AUTO_UPDATE {
+                            a.stop_inertia();
                         }
                         a.refresh();
                         error
@@ -487,6 +564,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                             w!("Edit settings (restart to apply)"),
                         );
                         let _ = AppendMenuW(menu, MF_STRING, UPDATE, w!("Check for updates"));
+                        let _ = AppendMenuW(
+                            menu,
+                            MF_STRING
+                                | if a.config.inertia_enabled {
+                                    MF_CHECKED
+                                } else {
+                                    MF_UNCHECKED
+                                },
+                            INERTIA_ENABLED,
+                            w!("Inertial scrolling"),
+                        );
                         for (id, label, checked) in [
                             (
                                 INVERT_SCROLL,
@@ -681,6 +769,8 @@ fn run() -> Result<()> {
                 enabled: true,
                 label,
                 config,
+                hwnd,
+                inertia: inertia::Inertia::default(),
             })
         });
         let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard), Some(instance.into()), 0)?;
@@ -738,7 +828,13 @@ fn main() {
 mod callback_tests {
     use super::*;
     #[test]
-    fn shift_switches_g_axis_and_rebases_the_gesture() {
+    fn s_replaces_g_as_the_scroll_binding() {
+        assert_eq!(binding(0x53), Some(4));
+        assert_eq!(binding(0x47), None);
+        assert_eq!(binding(0x43), Some(5));
+    }
+    #[test]
+    fn shift_switches_s_axis_and_rebases_the_gesture() {
         publish_interaction(false, true, false);
         let (mode, epoch) = interaction();
         assert_eq!(mode, motion::Mode::Scroll);

@@ -24,6 +24,7 @@ struct Gate {
     top: f64,
     grace: std::time::Duration,
     continuing: bool,
+    physical: bool,
 }
 impl Gate {
     fn new(side: f64, top: f64, ms: u64) -> Self {
@@ -34,6 +35,7 @@ impl Gate {
             top: top / 100.0,
             grace: std::time::Duration::from_millis(ms),
             continuing: false,
+            physical: false,
         }
     }
     fn sample(&mut self, id: u32, point: Point, down: bool, now: Instant) {
@@ -93,12 +95,14 @@ struct Sample {
 struct Frame {
     expected: usize,
     samples: Vec<Sample>,
+    physical: bool,
 }
 impl Frame {
     fn start(&mut self, count: usize) {
         if count > 0 {
             self.expected = count;
             self.samples.clear();
+            self.physical = false;
         }
     }
     fn remaining(&self) -> usize {
@@ -109,6 +113,7 @@ impl Frame {
             return false;
         }
         // Only a complete frame may remove contacts, including serial/hybrid reports.
+        gate.physical = self.physical;
         let live: HashSet<_> = self
             .samples
             .iter()
@@ -121,6 +126,7 @@ impl Frame {
         }
         self.expected = 0;
         self.samples.clear();
+        self.physical = false;
         true
     }
 }
@@ -306,6 +312,11 @@ impl Device {
                 return false;
             }
             let usages = &usages[..(count as usize).min(usages.len())];
+            let physical = usages.contains(&0x42);
+            self.frame.physical |= physical;
+            if physical {
+                self.gate.physical = true;
+            }
             let down = usages.contains(&0x42) && (!finger.confidence || usages.contains(&0x47));
             let mut id = 0;
             if HidP_GetUsageValue(
@@ -418,19 +429,22 @@ impl Devices {
             .flatten()
             .any(|d| !d.gate.contacts.is_empty())
     }
+    pub fn physical_contacts(&self) -> bool {
+        self.devices.values().flatten().any(|d| d.gate.physical)
+    }
     pub unsafe fn input(
         &mut self,
         handle: HRAWINPUT,
         mode: Mode,
         epoch: u64,
         tuning: Tuning,
-    ) -> Vec<Effect> {
+    ) -> (Vec<Effect>, bool) {
         let mut bytes = 0;
         let header = size_of::<RAWINPUTHEADER>() as u32;
         if GetRawInputData(handle, RID_INPUT, None, &mut bytes, header) == u32::MAX
             || bytes < (offset_of!(RAWINPUT, data) + offset_of!(RAWHID, bRawData)) as u32
         {
-            return Vec::new();
+            return (Vec::new(), false);
         }
         let mut buffer = vec![0usize; (bytes as usize).div_ceil(size_of::<usize>())];
         if GetRawInputData(
@@ -441,11 +455,11 @@ impl Devices {
             header,
         ) == u32::MAX
         {
-            return Vec::new();
+            return (Vec::new(), false);
         }
         let raw = &*(buffer.as_ptr() as *const RAWINPUT);
         if raw.header.dwType != RIM_TYPEHID.0 {
-            return Vec::new();
+            return (Vec::new(), false);
         }
         let key = raw.header.hDevice.0 as usize;
         let entry = self
@@ -453,7 +467,7 @@ impl Devices {
             .entry(key)
             .or_insert_with(|| Device::open(raw.header.hDevice, self.side, self.top, self.ms));
         let Some(device) = entry else {
-            return Vec::new();
+            return (Vec::new(), false);
         };
         let size = raw.data.hid.dwSizeHid as usize;
         let count = raw.data.hid.dwCount as usize;
@@ -464,24 +478,27 @@ impl Devices {
                 .and_then(|n| n.checked_add(offset))
                 .is_none_or(|n| n > bytes as usize)
         {
-            return Vec::new();
+            return (Vec::new(), false);
         }
         let reports = std::slice::from_raw_parts_mut(
             (buffer.as_mut_ptr() as *mut u8).add(offset),
             size * count,
         );
         let mut effects = Vec::new();
+        let mut complete = false;
         device.gate.continuing = mode != Mode::Off;
         for report in reports.chunks_exact_mut(size) {
-            if device.report(report)
-                && let Some(effect) = device
+            if device.report(report) {
+                complete = true;
+                if let Some(effect) = device
                     .motion
                     .feed(mode, epoch, device.gate.primary(), tuning)
-            {
-                effects.push(effect);
+                {
+                    effects.push(effect);
+                }
             }
         }
-        effects
+        (effects, complete)
     }
     pub fn summary(&self) -> String {
         let devices: Vec<_> = self.devices.values().flatten().collect();
@@ -513,6 +530,24 @@ mod tests {
     use std::time::Duration;
     fn p(x: f64, y: f64) -> Point {
         Point { x, y }
+    }
+    #[test]
+    fn physical_touch_is_detected_even_when_not_accepted_for_clicking() {
+        let mut g = Gate::new(12.0, 15.0, 500);
+        let mut frame = Frame::default();
+        frame.start(1);
+        frame.physical = true;
+        frame.samples.push(Sample {
+            id: 1,
+            point: p(0.01, 0.01),
+            down: false,
+        });
+        assert!(frame.commit(&mut g, Instant::now()));
+        assert!(g.physical);
+        assert!(!g.touching());
+        frame.start(0);
+        frame.commit(&mut g, Instant::now());
+        assert!(!g.physical);
     }
     #[test]
     fn held_f_resumes_at_edges_after_multiple_long_clutches() {

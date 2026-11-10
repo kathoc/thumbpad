@@ -142,7 +142,7 @@ mod tests {
         assert!(!e.dragging());
     }
     #[test]
-    fn g_owns_scroll_without_mouse_buttons_and_pause_clears_it() {
+    fn s_owns_scroll_without_mouse_buttons_and_pause_clears_it() {
         let mut e = Engine::default();
         assert_eq!(e.key(4, true, true), (true, None));
         assert!(e.scrolling());
