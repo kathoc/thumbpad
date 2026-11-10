@@ -116,3 +116,7 @@ filter driver. No independent Authenticode or update-signing key is configured.
 ## v0.1.8
 
 46 tests passed, one native timing probe ignored; formatting and clippy passed. Added a frame-level regression for single-finger movement, a second finger at an excluded edge, a remaining finger after scrolling, full lift and a jump-free new gesture. Trackball pointer velocity estimation is reset during the multi-finger gesture. Configuration tests verify independent pointer gain, unchanged wheel/mouse tuning, preserved hold duration, and invalid gain rejection. Default trackball sensitivity is now 125%; this is an adjustable initial tuning, not a measured match to Windows Precision Touchpad acceleration. Physical two-finger scrolling and perceived sensitivity still require user verification.
+
+## v0.1.9
+
+47 tests passed, one timing probe ignored; fmt and clippy passed. Reproduced the Notepad path error with the installed app and also through the Notepad Open dialog. Replaced external editor launching with a native JSON editor. On the installed final build, verified current settings display, rejection of trackball_pointer_speed=0 without changing the saved file, successful save and editor close, and preservation of trackball mode, gain 1.25 and stop hold 100ms. Tests cover invalid JSON, unknown fields, out-of-range values and valid custom settings. The precise cause of Notepad path resolution was not established; the built-in editor removes that dependency.

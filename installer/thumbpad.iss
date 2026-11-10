@@ -1,6 +1,6 @@
 #define AppName "Thumbpad"
 #ifndef AppVersion
-  #define AppVersion "0.1.8"
+  #define AppVersion "0.1.9"
 #endif
 #ifndef BuildDir
   #define BuildDir "..\target\release"
@@ -46,8 +46,8 @@ Name: "{group}\Uninstall Thumbpad"; Filename: "{uninstallexe}"
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Thumbpad"; ValueData: """{app}\thumbpad.exe"" --background"; Tasks: startup; Flags: uninsdeletevalue
 [Run]
-Filename: "{app}\thumbpad.exe"; Description: "Launch Thumbpad"; Flags: nowait postinstall skipifsilent
-Filename: "{app}\thumbpad.exe"; Parameters: "--background"; Flags: nowait runhidden; Check: IsUpgrade
+Filename: "{app}\thumbpad.exe"; WorkingDir: "{app}"; Description: "Launch Thumbpad"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\thumbpad.exe"; Parameters: "--background"; WorkingDir: "{app}"; Flags: nowait runhidden; Check: IsUpgrade
 [UninstallRun]
 Filename: "{app}\thumbpad.exe"; Parameters: "--quit"; Flags: runhidden waituntilterminated; RunOnceId: "CloseThumbpad"
 [UninstallDelete]

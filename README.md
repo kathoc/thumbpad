@@ -97,8 +97,8 @@ S または Shift+S を押して指を弾き、パッドから指を離すと、
 
 ## 設定
 
-トレイまたは診断画面の Settings から `%LOCALAPPDATA%\Thumbpad\settings.json` を開けます。
-保存後は終了して再起動してください。
+トレイまたは診断画面の Settings から内蔵のJSON設定画面を開けます。
+`Save and close` で検証・保存して即時反映し、`Cancel` で変更を破棄します。設定ファイルは `%LOCALAPPDATA%\Thumbpad\settings.json` です。
 
 ```json
 {

@@ -77,6 +77,11 @@ pub fn data_dir() -> PathBuf {
         .join("Thumbpad")
 }
 impl Config {
+    pub fn parse(text: &str) -> Fallible<Self> {
+        let config: Self = serde_json::from_str(text)?;
+        config.validate()?;
+        Ok(config)
+    }
     fn validate(&self) -> Fallible<()> {
         if !self.edge_side_percent.is_finite()
             || !(0.0..=45.0).contains(&self.edge_side_percent)
@@ -179,12 +184,6 @@ impl Config {
         fs::rename(temporary, data_dir().join("settings.json"))?;
         Ok(())
     }
-}
-pub fn open_settings() -> Fallible<()> {
-    Command::new("notepad.exe")
-        .arg(data_dir().join("settings.json"))
-        .spawn()?;
-    Ok(())
 }
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 pub fn startup_enabled() -> bool {
@@ -418,6 +417,21 @@ mod tests {
         assert_eq!(config.pointer_mode, PointerMode::Trackball);
         assert!(config.validate().is_ok());
         assert!(serde_json::from_str::<Config>(r#"{"pointer_mode":"unknown"}"#).is_err());
+    }
+    #[test]
+    fn settings_editor_rejects_invalid_json_unknown_fields_and_out_of_range_values() {
+        for text in [
+            "{",
+            r#"{"trackball_pointer_speed":0}"#,
+            r#"{"pointer_stop_hold_ms":9000}"#,
+            r#"{"typo":true}"#,
+        ] {
+            assert!(Config::parse(text).is_err());
+        }
+        let config = Config::parse(r#"{"pointer_mode":"trackball","trackball_pointer_speed":1.45,"pointer_stop_hold_ms":100}"#).unwrap();
+        assert_eq!(config.pointer_mode, PointerMode::Trackball);
+        assert_eq!(config.trackball_pointer_speed, 1.45);
+        assert_eq!(config.pointer_stop_hold_ms, 100);
     }
     #[test]
     fn trackball_speed_only_scales_pointer_and_preserves_custom_settings() {

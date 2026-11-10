@@ -5,6 +5,7 @@ mod engine;
 mod glide;
 mod inertia;
 mod motion;
+mod settings;
 mod touchpad;
 mod update;
 use engine::{Action, Button, Engine};
@@ -705,7 +706,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     }
                 }
                 SETTINGS => {
-                    if let Err(e) = update::open_settings() {
+                    if let Err(e) = settings::open() {
                         message(&e.to_string());
                     }
                 }

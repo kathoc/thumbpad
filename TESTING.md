@@ -63,3 +63,5 @@ OS の版・ビルド、PC の型番、タッチパッドのドライバーバ�
 
 48. In trackball mode, verify increased pointer travel and faster/slower tray controls. Restart and check persistence; mouse mode and scroll sensitivity must remain unchanged.
 49. Scroll natively with two fingers, including one finger at the edge; pointer must remain still. Lift one finger, then all fingers; the next single-finger motion must resume without jumping or momentum from the scroll gesture.
+
+50. Edit Settings opens the built-in editor with current settings. Cancel leaves settings unchanged; Save and close persists and immediately applies a valid edit. Invalid JSON, unknown fields and out-of-range values must show an error and keep both the editor and previous settings intact. Reopen to verify saved values.

@@ -1,3 +1,9 @@
+# v0.1.9
+
+- Replace external Notepad launching with a built-in JSON settings editor.
+- Validate settings before saving and apply them immediately. Invalid edits keep the editor open and preserve current settings. Cancel discards edits.
+- Set a stable working directory for installer-launched instances.
+
 # v0.1.8
 
 - Add independent trackball pointer sensitivity, defaulting to 125%, with persistent faster/slower tray controls.
