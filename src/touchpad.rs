@@ -525,6 +525,8 @@ mod tests {
             drag_y: 1000.0,
             wheel: 2400.0,
             invert: false,
+            wheel_x: 2400.0,
+            horizontal_invert: true,
         };
         let t = Instant::now();
         g.sample(1, p(0.5, 0.5), true, t);

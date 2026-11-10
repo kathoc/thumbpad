@@ -29,6 +29,8 @@ pub struct Config {
     pub drag_pixels_per_pad_height: f64,
     pub scroll_units_per_pad_height: f64,
     pub scroll_invert: bool,
+    pub scroll_units_per_pad_width: f64,
+    pub scroll_horizontal_invert: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -41,7 +43,9 @@ impl Default for Config {
             drag_pixels_per_pad_width: 1600.0,
             drag_pixels_per_pad_height: 1000.0,
             scroll_units_per_pad_height: 2400.0,
-            scroll_invert: false,
+            scroll_invert: true,
+            scroll_units_per_pad_width: 2400.0,
+            scroll_horizontal_invert: true,
         }
     }
 }
@@ -62,6 +66,7 @@ impl Config {
                 self.drag_pixels_per_pad_width,
                 self.drag_pixels_per_pad_height,
                 self.scroll_units_per_pad_height,
+                self.scroll_units_per_pad_width,
             ]
             .iter()
             .all(|v| v.is_finite() && (1.0..=20000.0).contains(v))
@@ -76,6 +81,8 @@ impl Config {
             drag_y: self.drag_pixels_per_pad_height,
             wheel: self.scroll_units_per_pad_height,
             invert: self.scroll_invert,
+            wheel_x: self.scroll_units_per_pad_width,
+            horizontal_invert: self.scroll_horizontal_invert,
         }
     }
     pub fn load() -> Self {
@@ -104,6 +111,8 @@ impl Config {
                             "drag_pixels_per_pad_height",
                             "scroll_units_per_pad_height",
                             "scroll_invert",
+                            "scroll_units_per_pad_width",
+                            "scroll_horizontal_invert",
                         ]
                         .iter()
                         .any(|key| value.get(key).is_none())
@@ -360,6 +369,15 @@ pub fn start_scheduler() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reversed_scroll_defaults_and_saved_direction_preferences() {
+        let defaults: Config = serde_json::from_str("{}").unwrap();
+        assert!(defaults.scroll_invert && defaults.scroll_horizontal_invert);
+        let custom: Config =
+            serde_json::from_str(r#"{"scroll_invert":false,"scroll_horizontal_invert":false}"#)
+                .unwrap();
+        assert!(!custom.motion_tuning().invert && !custom.motion_tuning().horizontal_invert);
+    }
     fn asset(bytes: &[u8]) -> Asset {
         Asset {
             name: ASSET.into(),

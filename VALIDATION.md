@@ -6,7 +6,7 @@ This is a prototype validation record, not a cross-device compatibility claim.
 
 - `cargo fmt --check`: passed.
 - `cargo clippy --locked --all-targets -- -D warnings`: passed.
-- `cargo test --locked`: 20 passed, 0 failed (v0.1.1).
+- `cargo test --locked`: 24 passed, 0 failed (v0.1.2).
 - Optimized Windows x64 build: passed.
 - Inno Setup 6.7.4 installer compilation: passed.
 
@@ -29,6 +29,12 @@ The v0.1.1 installer was applied to the default per-user installation: exit 0,
 installed executable matched the release build, and all previous settings were
 preserved while the new motion/scroll defaults were added. The running UI reported
 v0.1.1 and `Mouse hook: DETACHED (no mouse interception)` while idle.
+v0.1.2 adds C middle-button ownership/release, reversed vertical and horizontal
+defaults with saved overrides, rightward-to-left horizontal wheel signs, and live
+Shift axis switching with a fresh motion epoch. These are covered by four new tests.
+The installed copy was upgraded to v0.1.2 (exit 0), its executable hash matched
+the release build, and both inverted-direction settings were confirmed enabled
+on this PC at the user's request. Other existing settings were preserved.
 
 ## Native UI checks
 

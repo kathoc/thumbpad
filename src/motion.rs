@@ -5,6 +5,7 @@ pub enum Mode {
     Off,
     Drag,
     Scroll,
+    HorizontalScroll,
 }
 #[derive(Clone, Copy)]
 pub struct Tuning {
@@ -12,11 +13,14 @@ pub struct Tuning {
     pub drag_y: f64,
     pub wheel: f64,
     pub invert: bool,
+    pub wheel_x: f64,
+    pub horizontal_invert: bool,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum Effect {
     Move { dx: i32, dy: i32 },
     Wheel(i32),
+    HorizontalWheel(i32),
 }
 #[derive(Default)]
 pub struct Motion {
@@ -67,18 +71,47 @@ impl Motion {
                 self.remainder[1] -= delta as f64;
                 (delta != 0).then_some(Effect::Wheel(delta))
             }
+            Mode::HorizontalScroll => {
+                self.remainder[0] +=
+                    (x - ox) * tuning.wheel_x * if tuning.horizontal_invert { -1.0 } else { 1.0 };
+                let delta = self.remainder[0].round() as i32;
+                self.remainder[0] -= delta as f64;
+                (delta != 0).then_some(Effect::HorizontalWheel(delta))
+            }
         }
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn horizontal_scroll_rightward_drag_scrolls_left_and_can_be_reversed() {
+        let mut m = Motion::default();
+        m.feed(Mode::HorizontalScroll, 1, Some((1, 0.5, 0.5)), t());
+        assert_eq!(
+            m.feed(Mode::HorizontalScroll, 1, Some((1, 0.55, 0.9)), t()),
+            Some(Effect::HorizontalWheel(-120))
+        );
+        let mut reverse = t();
+        reverse.horizontal_invert = false;
+        assert_eq!(
+            m.feed(Mode::HorizontalScroll, 1, Some((1, 0.6, 0.1)), reverse),
+            Some(Effect::HorizontalWheel(120))
+        );
+        assert_eq!(m.feed(Mode::Scroll, 2, Some((1, 0.1, 0.5)), t()), None);
+        assert_eq!(
+            m.feed(Mode::HorizontalScroll, 3, Some((1, 0.9, 0.1)), t()),
+            None
+        );
+    }
     fn t() -> Tuning {
         Tuning {
             drag_x: 1000.0,
             drag_y: 1000.0,
             wheel: 2400.0,
             invert: false,
+            wheel_x: 2400.0,
+            horizontal_invert: true,
         }
     }
     #[test]

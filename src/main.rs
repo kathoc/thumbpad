@@ -28,6 +28,8 @@ const EXIT: usize = 104;
 const AUTO_UPDATE: usize = 105;
 const STARTUP: usize = 106;
 const SETTINGS: usize = 107;
+const INVERT_SCROLL: usize = 108;
+const INVERT_HSCROLL: usize = 109;
 struct App {
     devices: touchpad::Devices,
     enabled: bool,
@@ -50,28 +52,41 @@ static SCROLL_EVENTS: AtomicU64 = AtomicU64::new(0);
 static MOUSE_THREAD: AtomicU32 = AtomicU32::new(0);
 static MOUSE_READY: AtomicBool = AtomicBool::new(false);
 const RECONFIGURE_MOUSE: u32 = WM_APP + 10;
-fn publish_interaction(dragging: bool, scrolling: bool) {
-    let flags = u64::from(dragging) | (u64::from(scrolling) << 1);
+fn publish_interaction(dragging: bool, scrolling: bool, shift: bool) {
+    let flags =
+        u64::from(dragging) | (u64::from(scrolling) << 1) | (u64::from(scrolling && shift) << 2);
     let old = INTERACTION.load(Ordering::Relaxed);
-    if old & 3 != flags {
-        INTERACTION.store(((old.wrapping_add(4)) & !3) | flags, Ordering::Relaxed);
+    if old & 7 != flags {
+        INTERACTION.store(((old.wrapping_add(8)) & !7) | flags, Ordering::Relaxed);
     }
 }
 fn interaction() -> (motion::Mode, u64) {
     let value = INTERACTION.load(Ordering::Relaxed);
     (
         if value & 2 != 0 {
-            motion::Mode::Scroll
+            if value & 4 != 0 {
+                motion::Mode::HorizontalScroll
+            } else {
+                motion::Mode::Scroll
+            }
         } else if value & 1 != 0 {
             motion::Mode::Drag
         } else {
             motion::Mode::Off
         },
-        value >> 2,
+        value >> 3,
     )
 }
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
+}
+fn flip_setting(config: &mut update::Config, command: usize) {
+    match command {
+        AUTO_UPDATE => config.auto_update = !config.auto_update,
+        INVERT_SCROLL => config.scroll_invert = !config.scroll_invert,
+        INVERT_HSCROLL => config.scroll_horizontal_invert = !config.scroll_horizontal_invert,
+        _ => {}
+    }
 }
 pub fn message(text: &str) {
     unsafe {
@@ -84,6 +99,8 @@ unsafe fn inject(action: &Action) -> bool {
         (Button::Left, false) => MOUSEEVENTF_LEFTUP,
         (Button::Right, true) => MOUSEEVENTF_RIGHTDOWN,
         (Button::Right, false) => MOUSEEVENTF_RIGHTUP,
+        (Button::Middle, true) => MOUSEEVENTF_MIDDLEDOWN,
+        (Button::Middle, false) => MOUSEEVENTF_MIDDLEUP,
     };
     let input = INPUT {
         r#type: INPUT_MOUSE,
@@ -113,6 +130,14 @@ unsafe fn inject_motion(effect: motion::Effect) {
                 ..Default::default()
             }
         }
+        motion::Effect::HorizontalWheel(delta) => {
+            SCROLL_EVENTS.fetch_add(1, Ordering::Relaxed);
+            MOUSEINPUT {
+                mouseData: delta as u32,
+                dwFlags: MOUSEEVENTF_HWHEEL,
+                ..Default::default()
+            }
+        }
     };
     let input = INPUT {
         r#type: INPUT_MOUSE,
@@ -131,7 +156,7 @@ impl App {
     unsafe fn release(&mut self, reset: bool) {
         CLICK_ACTIVE.store(false, Ordering::Relaxed);
         POINTER_BLOCK.store(false, Ordering::Relaxed);
-        publish_interaction(false, false);
+        publish_interaction(false, false, false);
         let actions = ENGINE.with_borrow_mut(|e| if reset { e.reset() } else { e.release() });
         for a in actions {
             if !inject(&a) {
@@ -163,7 +188,7 @@ impl App {
     }
     unsafe fn refresh(&self) {
         let text = format!(
-            "Thumbpad {}  /  {}\r\n\r\nTouch the touchpad: F / J = left click, D / K = right click, G = scroll.\r\nHold a click key to drag; lift and reposition without releasing the key.\r\nHold G and slide up/down to scroll. Ctrl+Alt+F12 pauses.\r\nCtrl / Alt / Win shortcuts pass through.\r\n\r\n{}\r\n\r\nClicks: {}   Input / hook failures: {}\r\nMax keyboard hook processing: {} us (not end-to-end latency)\r\n\r\nAutomatic update checks: {} (startup and every 24 hours)\r\nUpdates require confirmation before installation.\r\n\r\nRight-click the tray icon for settings and controls.\r\nClosing this window keeps Thumbpad running.",
+            "Thumbpad {}  /  {}\r\n\r\nTouch: F / J = left, D / K = right, C = middle, G = vertical scroll.\r\nHold a click key to drag; lift and reposition without releasing the key.\r\nShift+G = horizontal scroll (rightward motion scrolls left by default).\r\nCtrl+Alt+F12 pauses. Change scroll direction from the tray menu.\r\nCtrl / Alt / Win shortcuts pass through.\r\n\r\n{}\r\n\r\nClicks: {}   Input / hook failures: {}\r\nMax keyboard hook processing: {} us (not end-to-end latency)\r\n\r\nAutomatic update checks: {} (startup and every 24 hours)\r\nUpdates require confirmation before installation.\r\n\r\nRight-click the tray icon for settings and controls.\r\nClosing this window keeps Thumbpad running.",
             env!("CARGO_PKG_VERSION"),
             if self.enabled { "ENABLED" } else { "PAUSED" },
             self.devices.summary(),
@@ -207,12 +232,25 @@ unsafe extern "system" fn keyboard(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
         return CallNextHookEx(None, code, wp, lp);
     }
     let modifiers = |vk| GetAsyncKeyState(vk) < 0;
+    if matches!(k.vkCode, 0x10 | 0xa0 | 0xa1) {
+        // Low-level callbacks precede the async-state update for this event.
+        let shift = down
+            || match k.vkCode {
+                0xa0 => modifiers(VK_RSHIFT.0 as i32),
+                0xa1 => modifiers(VK_LSHIFT.0 as i32),
+                _ => false,
+            };
+        let (dragging, scrolling) = ENGINE.with_borrow(|e| (e.dragging(), e.scrolling()));
+        publish_interaction(dragging, scrolling, shift);
+        return CallNextHookEx(None, code, wp, lp);
+    }
     let index = match k.vkCode {
         0x46 => 0,
         0x4A => 1,
         0x4B => 2,
         0x44 => 3,
         0x47 => 4,
+        0x43 => 5,
         _ => return CallNextHookEx(None, code, wp, lp),
     };
     let start = Instant::now();
@@ -224,7 +262,7 @@ unsafe extern "system" fn keyboard(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
         let (consumed, action) = e.key(index, down, active);
         (consumed, action, e.dragging(), e.scrolling())
     });
-    publish_interaction(dragging, scrolling);
+    publish_interaction(dragging, scrolling, modifiers(VK_SHIFT.0 as i32));
     if let Some(action) = action {
         if inject(&action) {
             if action.down {
@@ -314,7 +352,7 @@ unsafe fn tray(hwnd: HWND, add: bool) {
         hIcon: LoadIconW(None, IDI_APPLICATION).unwrap_or_default(),
         ..Default::default()
     };
-    let tip = wide("Thumbpad - F/J: left, D/K: right, G: scroll");
+    let tip = wide("Thumbpad - F/J: left, D/K: right, C: middle, G: scroll");
     data.szTip[..tip.len()].copy_from_slice(&tip);
     let _ = Shell_NotifyIconW(if add { NIM_ADD } else { NIM_DELETE }, &data);
 }
@@ -394,13 +432,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     let _ = PostMessageW(Some(hwnd), SHOW, WPARAM(0), LPARAM(0));
                 }
                 UPDATE => update::check_async(true),
-                AUTO_UPDATE => {
+                command @ (AUTO_UPDATE | INVERT_SCROLL | INVERT_HSCROLL) => {
                     let error = APP.with_borrow_mut(|app| {
                         let a = app.as_mut()?;
-                        a.config.auto_update = !a.config.auto_update;
+                        flip_setting(&mut a.config, command);
                         let error = a.config.save().err().map(|e| e.to_string());
                         if error.is_some() {
-                            a.config.auto_update = !a.config.auto_update;
+                            flip_setting(&mut a.config, command);
                         }
                         a.refresh();
                         error
@@ -449,6 +487,25 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                             w!("Edit settings (restart to apply)"),
                         );
                         let _ = AppendMenuW(menu, MF_STRING, UPDATE, w!("Check for updates"));
+                        for (id, label, checked) in [
+                            (
+                                INVERT_SCROLL,
+                                w!("Invert vertical scroll"),
+                                a.config.scroll_invert,
+                            ),
+                            (
+                                INVERT_HSCROLL,
+                                w!("Invert horizontal scroll"),
+                                a.config.scroll_horizontal_invert,
+                            ),
+                        ] {
+                            let _ = AppendMenuW(
+                                menu,
+                                MF_STRING | if checked { MF_CHECKED } else { MF_UNCHECKED },
+                                id,
+                                label,
+                            );
+                        }
                         let _ = AppendMenuW(
                             menu,
                             MF_STRING
@@ -680,6 +737,26 @@ fn main() {
 #[cfg(test)]
 mod callback_tests {
     use super::*;
+    #[test]
+    fn shift_switches_g_axis_and_rebases_the_gesture() {
+        publish_interaction(false, true, false);
+        let (mode, epoch) = interaction();
+        assert_eq!(mode, motion::Mode::Scroll);
+        publish_interaction(false, true, true);
+        let (mode, shifted) = interaction();
+        assert_eq!(mode, motion::Mode::HorizontalScroll);
+        assert_ne!(epoch, shifted);
+        publish_interaction(false, true, false);
+        let (mode, released) = interaction();
+        assert_eq!(mode, motion::Mode::Scroll);
+        assert_ne!(shifted, released);
+        publish_interaction(false, false, false);
+        let mut config = update::Config::default();
+        flip_setting(&mut config, INVERT_SCROLL);
+        assert!(!config.scroll_invert);
+        flip_setting(&mut config, INVERT_HSCROLL);
+        assert!(!config.scroll_horizontal_invert);
+    }
     #[test]
     fn mouse_hook_can_interrupt_a_borrowed_ui_state() {
         let event = MSLLHOOKSTRUCT::default();

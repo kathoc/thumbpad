@@ -1,14 +1,15 @@
 //! Key ownership is fixed at the first physical down, including across repeats.
 #[derive(Default)]
 pub struct Engine {
-    down: [bool; 5],
-    captured: [bool; 5],
-    held: [bool; 5],
+    down: [bool; 6],
+    captured: [bool; 6],
+    held: [bool; 6],
 }
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Button {
     Left,
     Right,
+    Middle,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub struct Action {
@@ -20,6 +21,7 @@ impl Engine {
         match i {
             0 | 1 => Some(Button::Left),
             2 | 3 => Some(Button::Right),
+            5 => Some(Button::Middle),
             _ => None,
         }
     }
@@ -67,7 +69,7 @@ impl Engine {
         }
     }
     pub fn release(&mut self) -> Vec<Action> {
-        let actions = [Button::Left, Button::Right]
+        let actions = [Button::Left, Button::Right, Button::Middle]
             .into_iter()
             .filter(|b| self.count(*b) > 0)
             .map(|button| Action {
@@ -75,7 +77,7 @@ impl Engine {
                 down: false,
             })
             .collect();
-        self.held = [false; 5];
+        self.held = [false; 6];
         actions
     }
     pub fn reset(&mut self) -> Vec<Action> {
@@ -84,7 +86,10 @@ impl Engine {
         actions
     }
     pub fn dragging(&self) -> bool {
-        self.held[..4].iter().any(|held| *held)
+        self.held
+            .iter()
+            .enumerate()
+            .any(|(i, held)| i != 4 && *held)
     }
     pub fn scrolling(&self) -> bool {
         self.held[4]
@@ -93,6 +98,28 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn c_holds_and_releases_middle_button_including_pause() {
+        let mut e = Engine::default();
+        assert_eq!(
+            e.key(5, true, true).1,
+            Some(Action {
+                button: Button::Middle,
+                down: true
+            })
+        );
+        assert!(e.dragging());
+        assert_eq!(e.key(5, true, false), (true, None));
+        assert_eq!(
+            e.release(),
+            vec![Action {
+                button: Button::Middle,
+                down: false
+            }]
+        );
+        assert_eq!(e.key(5, false, false), (true, None));
+        assert!(!e.dragging());
+    }
     #[test]
     fn d_and_k_share_right_button_ownership() {
         let mut e = Engine::default();
