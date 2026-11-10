@@ -6,7 +6,8 @@ This is a prototype validation record, not a cross-device compatibility claim.
 
 - `cargo fmt --check`: passed.
 - `cargo clippy --locked --all-targets -- -D warnings`: passed.
-- `cargo test --locked`: 35 passed, 0 failed (v0.1.4).
+- `cargo test --locked`: 38 passed, 0 failed, 1 ignored (v0.1.5).
+- Separate native timer probe: passed; 300 intervals, median 2108 us, p95 2554 us, max 2930 us on this PC. This probe generates no pointer input and does not measure rendering latency.
 - Optimized Windows x64 build: passed.
 - Inno Setup 6.7.4 installer compilation: passed.
 
@@ -51,6 +52,17 @@ before this compatibility path. Excel's resulting behavior still needs user veri
 The v0.1.4 installer completed with exit 0, installed bytes matched the release
 build, and all previous preferences were preserved. Pointer mode remained `mouse`
 as the default; the trackball option and pointer decay default were added.
+v0.1.5 moves pointer momentum off WM_TIMER/UI onto a dedicated high-resolution
+2ms waitable timer. Fractional 2D distances are retained until final physical-pixel
+output; a low-speed minor axis is no longer discarded independently. Tests cover
+fractional shallow diagonals, tick-rate-independent total distance, and absolute
+coordinate round trips across a negative-origin virtual desktop.
+Trackball direct movement and momentum use the same absolute-pixel output, avoiding
+relative mouse acceleration on each tick. Queued movement uses cancellation generations.
+Smoothness under actual flicks still requires user comparison with v0.1.4.
+The v0.1.5 installer completed with exit 0 at the default location. Installed
+bytes matched the release build and settings.json was byte-for-byte unchanged,
+including the user's enabled trackball mode. The updated application started.
 
 ## Native UI checks
 

@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 #![allow(unsafe_op_in_unsafe_fn)]
 mod engine;
+mod glide;
 mod inertia;
 mod motion;
 mod touchpad;
@@ -60,6 +61,10 @@ static MOUSE_THREAD: AtomicU32 = AtomicU32::new(0);
 static MOUSE_READY: AtomicBool = AtomicBool::new(false);
 static TRACKBALL_MODE: AtomicBool = AtomicBool::new(false);
 static EXCEL_SCROLL_EVENTS: AtomicU64 = AtomicU64::new(0);
+static GLIDE: std::sync::OnceLock<glide::Client> = std::sync::OnceLock::new();
+fn pointer_running() -> bool {
+    GLIDE.get().is_some_and(glide::Client::active)
+}
 const RECONFIGURE_MOUSE: u32 = WM_APP + 10;
 fn publish_interaction(dragging: bool, scrolling: bool, shift: bool) {
     let flags =
@@ -171,6 +176,13 @@ unsafe fn excel_horizontal_scroll(delta: i32) -> bool {
     PostMessageW(Some(target), WM_MOUSEWHEEL, wp, lp).is_ok()
 }
 unsafe fn inject_motion(effect: motion::Effect) {
+    if let motion::Effect::Move { dx, dy } = effect
+        && TRACKBALL_MODE.load(Ordering::Relaxed)
+        && let Some(worker) = GLIDE.get()
+    {
+        worker.move_by(dx, dy);
+        return;
+    }
     let input = match effect {
         motion::Effect::Move { dx, dy } => MOUSEINPUT {
             dx,
@@ -214,6 +226,9 @@ unsafe fn inject_motion(effect: motion::Effect) {
 }
 impl App {
     unsafe fn stop_inertia(&mut self) {
+        if let Some(worker) = GLIDE.get() {
+            worker.stop();
+        }
         self.inertia.stop();
         self.pointer_inertia.stop();
         let _ = KillTimer(Some(self.hwnd), INERTIA_TIMER);
@@ -304,7 +319,7 @@ impl App {
         let text = format!(
             "{text}\r\nPointer mode: {} / Excel horizontal samples: {}",
             if self.config.pointer_mode == update::PointerMode::Trackball {
-                if self.pointer_inertia.active() {
+                if pointer_running() {
                     "TRACKBALL (rolling)"
                 } else {
                     "TRACKBALL"
@@ -313,6 +328,10 @@ impl App {
                 "MOUSE"
             },
             EXCEL_SCROLL_EVENTS.load(Ordering::Relaxed)
+        );
+        let (ticks, max_gap) = GLIDE.get().map(glide::Client::stats).unwrap_or_default();
+        let text = format!(
+            "{text}\r\nPointer glide: high-resolution 2ms / ticks {ticks} / max gap {max_gap} us"
         );
         let _ = SetWindowTextW(self.label, PCWSTR(wide(&text).as_ptr()));
     }
@@ -492,7 +511,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     );
                     let now = Instant::now();
                     if a.devices.physical_contacts() {
-                        if !was_physical || a.inertia.active() || a.pointer_inertia.active() {
+                        if !was_physical || a.inertia.active() || pointer_running() {
                             a.stop_inertia();
                         }
                         if complete && a.enabled {
@@ -527,8 +546,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     } else if was_physical && a.enabled {
                         let scroll = a.config.inertia_enabled && a.inertia.release(now);
                         let pointer = trackball && a.pointer_inertia.release(now);
-                        if (scroll || pointer) && SetTimer(Some(hwnd), INERTIA_TIMER, 16, None) == 0
-                        {
+                        if pointer && let Some(worker) = GLIDE.get() {
+                            worker.start(
+                                std::mem::take(&mut a.pointer_inertia),
+                                a.config.pointer_inertia_decay,
+                            );
+                        }
+                        if scroll && SetTimer(Some(hwnd), INERTIA_TIMER, 16, None) == 0 {
                             a.stop_inertia();
                             ERRORS.fetch_add(1, Ordering::Relaxed);
                         }
@@ -571,18 +595,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 if !a.config.inertia_enabled {
                     a.inertia.stop();
                 }
-                if a.config.pointer_mode != update::PointerMode::Trackball {
-                    a.pointer_inertia.stop();
-                }
                 let now = Instant::now();
-                let effects: Vec<_> = [
-                    a.inertia.tick(now, a.config.inertia_decay),
-                    a.pointer_inertia.tick(now, a.config.pointer_inertia_decay),
-                ]
-                .into_iter()
-                .flatten()
-                .collect();
-                if !a.inertia.active() && !a.pointer_inertia.active() {
+                let effects: Vec<_> = a
+                    .inertia
+                    .tick(now, a.config.inertia_decay)
+                    .into_iter()
+                    .collect();
+                if !a.inertia.active() {
                     let _ = KillTimer(Some(hwnd), INERTIA_TIMER);
                 }
                 Some(effects)
@@ -907,6 +926,8 @@ fn run() -> Result<()> {
         // No global mouse hook while the touchpad is untouched. When needed it
         // runs on its own message thread, independent of rendering and settings.
         let (mouse_worker, mouse_thread_id) = start_mouse_thread()?;
+        let (pointer_client, pointer_worker) = glide::spawn()?;
+        let _ = GLIDE.set(pointer_client);
         tray(hwnd, true);
         SetTimer(Some(hwnd), 1, 500, None);
         // Consume STARTUPINFO's show command even for a hidden launch. Otherwise
@@ -936,6 +957,10 @@ fn run() -> Result<()> {
         let _ = UnhookWindowsHookEx(hook);
         let _ = PostThreadMessageW(mouse_thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
         let _ = mouse_worker.join();
+        if let Some(worker) = GLIDE.get() {
+            worker.shutdown();
+        }
+        let _ = pointer_worker.join();
         let _ = CloseHandle(mutex);
         Ok(())
     }
