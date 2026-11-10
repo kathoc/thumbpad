@@ -4,6 +4,7 @@ mod engine;
 mod touchpad;
 mod update;
 use engine::{Action, Button, Engine};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::{cell::RefCell, mem::size_of, time::Instant};
 use windows::{
     Win32::{
@@ -27,17 +28,21 @@ const AUTO_UPDATE: usize = 105;
 const STARTUP: usize = 106;
 const SETTINGS: usize = 107;
 struct App {
-    engine: Engine,
     devices: touchpad::Devices,
     enabled: bool,
     label: HWND,
-    clicks: u64,
-    max_hook_us: u128,
-    errors: u64,
     config: update::Config,
-    blocked_moves: u64,
 }
 thread_local! { static APP: RefCell<Option<App>> = const { RefCell::new(None) }; }
+thread_local! { static ENGINE: RefCell<Engine> = RefCell::new(Engine::default()); }
+// Hooks may interrupt User32 calls while APP is borrowed. They must never borrow
+// APP, and must drop the engine borrow before making any Windows API call.
+static CLICK_ACTIVE: AtomicBool = AtomicBool::new(false);
+static POINTER_BLOCK: AtomicBool = AtomicBool::new(false);
+static CLICKS: AtomicU64 = AtomicU64::new(0);
+static ERRORS: AtomicU64 = AtomicU64::new(0);
+static MAX_HOOK_US: AtomicU64 = AtomicU64::new(0);
+static BLOCKED_MOVES: AtomicU64 = AtomicU64::new(0);
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
@@ -67,20 +72,26 @@ unsafe fn inject(action: &Action) -> bool {
 }
 impl App {
     unsafe fn release(&mut self, reset: bool) {
-        let actions = if reset {
-            self.engine.reset()
-        } else {
-            self.engine.release()
-        };
+        CLICK_ACTIVE.store(false, Ordering::Relaxed);
+        POINTER_BLOCK.store(false, Ordering::Relaxed);
+        let actions = ENGINE.with_borrow_mut(|e| if reset { e.reset() } else { e.release() });
         for a in actions {
             if !inject(&a) {
-                self.errors += 1;
+                ERRORS.fetch_add(1, Ordering::Relaxed);
             }
         }
+    }
+    fn publish(&self) {
+        CLICK_ACTIVE.store(self.enabled && self.devices.touching(), Ordering::Relaxed);
+        POINTER_BLOCK.store(
+            self.enabled && self.config.edge_pointer_guard && self.devices.block_pointer(),
+            Ordering::Relaxed,
+        );
     }
     unsafe fn toggle(&mut self) {
         self.enabled = !self.enabled;
         self.release(false);
+        self.publish();
         self.refresh();
     }
     unsafe fn refresh(&self) {
@@ -89,9 +100,9 @@ impl App {
             env!("CARGO_PKG_VERSION"),
             if self.enabled { "ENABLED" } else { "PAUSED" },
             self.devices.summary(),
-            self.clicks,
-            self.errors,
-            self.max_hook_us,
+            CLICKS.load(Ordering::Relaxed),
+            ERRORS.load(Ordering::Relaxed),
+            MAX_HOOK_US.load(Ordering::Relaxed),
             if self.config.auto_update { "ON" } else { "OFF" }
         );
         let text = format!(
@@ -101,7 +112,7 @@ impl App {
             } else {
                 "OFF"
             },
-            self.blocked_moves
+            BLOCKED_MOVES.load(Ordering::Relaxed)
         );
         let _ = SetWindowTextW(self.label, PCWSTR(wide(&text).as_ptr()));
     }
@@ -127,28 +138,21 @@ unsafe extern "system" fn keyboard(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
         _ => return CallNextHookEx(None, code, wp, lp),
     };
     let start = Instant::now();
-    let consumed = APP.with_borrow_mut(|app| {
-        let Some(a) = app else {
-            return false;
-        };
-        let active = a.enabled
-            && a.devices.touching()
-            && ![VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN]
-                .iter()
-                .any(|vk| modifiers(vk.0 as i32));
-        let (consumed, action) = a.engine.key(index, down, active);
-        if let Some(action) = action {
-            if inject(&action) {
-                if action.down {
-                    a.clicks += 1;
-                }
-            } else {
-                a.errors += 1;
+    let active = CLICK_ACTIVE.load(Ordering::Relaxed)
+        && ![VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN]
+            .iter()
+            .any(|vk| modifiers(vk.0 as i32));
+    let (consumed, action) = ENGINE.with_borrow_mut(|e| e.key(index, down, active));
+    if let Some(action) = action {
+        if inject(&action) {
+            if action.down {
+                CLICKS.fetch_add(1, Ordering::Relaxed);
             }
+        } else {
+            ERRORS.fetch_add(1, Ordering::Relaxed);
         }
-        a.max_hook_us = a.max_hook_us.max(start.elapsed().as_micros());
-        consumed
-    });
+    }
+    MAX_HOOK_US.fetch_max(start.elapsed().as_micros() as u64, Ordering::Relaxed);
     if consumed {
         LRESULT(1)
     } else {
@@ -162,17 +166,9 @@ unsafe extern "system" fn mouse(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if code >= 0 && wp.0 == WM_MOUSEMOVE as usize {
         let event = &*(lp.0 as *const MSLLHOOKSTRUCT);
         if event.flags & LLMHF_INJECTED == 0 {
-            let block = APP.with_borrow_mut(|app| {
-                let Some(a) = app else {
-                    return false;
-                };
-                let block = a.enabled && a.config.edge_pointer_guard && a.devices.block_pointer();
-                if block {
-                    a.blocked_moves += 1;
-                }
-                block
-            });
+            let block = POINTER_BLOCK.load(Ordering::Relaxed);
             if block {
+                BLOCKED_MOVES.fetch_add(1, Ordering::Relaxed);
                 return LRESULT(1);
             }
         }
@@ -207,6 +203,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             APP.with_borrow_mut(|app| {
                 if let Some(a) = app {
                     a.devices.input(HRAWINPUT(lp.0 as _));
+                    a.publish();
                 }
             });
         }
@@ -476,7 +473,6 @@ fn run() -> Result<()> {
         let config = update::Config::load();
         APP.with_borrow_mut(|a| {
             *a = Some(App {
-                engine: Engine::default(),
                 devices: touchpad::Devices::new(
                     config.edge_side_percent,
                     config.edge_top_percent,
@@ -484,10 +480,6 @@ fn run() -> Result<()> {
                 ),
                 enabled: true,
                 label,
-                clicks: 0,
-                max_hook_us: 0,
-                errors: 0,
-                blocked_moves: 0,
                 config,
             })
         });
@@ -526,7 +518,34 @@ fn run() -> Result<()> {
     }
 }
 fn main() {
+    std::panic::set_hook(Box::new(|info| {
+        let folder = update::data_dir();
+        let _ = std::fs::create_dir_all(&folder);
+        let _ = std::fs::write(
+            folder.join("crash.txt"),
+            format!("{info}\n{}", std::backtrace::Backtrace::force_capture()),
+        );
+    }));
     if let Err(e) = run() {
         message(&format!("Thumbpad could not start:\n{e}"));
+    }
+}
+
+#[cfg(test)]
+mod callback_tests {
+    use super::*;
+    #[test]
+    fn mouse_hook_can_interrupt_a_borrowed_ui_state() {
+        let event = MSLLHOOKSTRUCT::default();
+        POINTER_BLOCK.store(true, Ordering::Relaxed);
+        let result = APP.with_borrow_mut(|_| unsafe {
+            mouse(
+                0,
+                WPARAM(WM_MOUSEMOVE as usize),
+                LPARAM(&event as *const _ as isize),
+            )
+        });
+        POINTER_BLOCK.store(false, Ordering::Relaxed);
+        assert_eq!(result.0, 1);
     }
 }

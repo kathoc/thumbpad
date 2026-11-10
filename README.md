@@ -84,6 +84,7 @@ GitHub の API 制限やネットワーク障害時は入力処理を継続し�
 
 外部通信は公開 GitHub API とリリースファイル取得のみです。キー入力内容の記録・送信、
 利用統計の送信はありません。診断はカウンターとデバイス情報を表示します。
+Rust のパニックが発生した場合は、原因とスタック情報を同フォルダーの `crash.txt` に保存します。自動送信はしません。
 
 ## 対応範囲と制約
 
@@ -100,6 +101,7 @@ GitHub の API 制限やネットワーク障害時は入力処理を継続し�
 ## 開発
 
 Rust 1.96.0、Visual Studio C++ Build Tools、Windows SDK、Inno Setup 6.3 以降が必要です。
+Windows x64 の C ランタイムは静的リンクし、別途 Visual C++ ランタイムの導入を不要にします。
 
 ```powershell
 cargo test --locked
