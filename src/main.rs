@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 #![allow(unsafe_op_in_unsafe_fn)]
+mod brake;
 mod engine;
 mod glide;
 mod inertia;
@@ -43,6 +44,7 @@ struct App {
     hwnd: HWND,
     inertia: inertia::Inertia,
     pointer_inertia: inertia::PointerInertia,
+    stop_hold: brake::StopHold,
 }
 thread_local! { static APP: RefCell<Option<App>> = const { RefCell::new(None) }; }
 thread_local! { static ENGINE: RefCell<Engine> = RefCell::new(Engine::default()); }
@@ -234,6 +236,7 @@ impl App {
         let _ = KillTimer(Some(self.hwnd), INERTIA_TIMER);
     }
     unsafe fn release(&mut self, reset: bool) {
+        self.stop_hold.reset();
         self.stop_inertia();
         CLICK_ACTIVE.store(false, Ordering::Relaxed);
         POINTER_BLOCK.store(false, Ordering::Relaxed);
@@ -503,13 +506,23 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         key_mode
                     };
                     let was_physical = a.devices.physical_contacts();
-                    let (effects, complete) = a.devices.input(
+                    let was_coasting = pointer_running() || a.inertia.active();
+                    let (mut effects, complete) = a.devices.input(
                         HRAWINPUT(lp.0 as _),
                         mode,
                         epoch,
                         a.config.motion_tuning(),
                     );
                     let now = Instant::now();
+                    let stopped_by_touch = was_coasting && a.devices.physical_contacts();
+                    if a.stop_hold.suppress(
+                        now,
+                        trackball,
+                        stopped_by_touch,
+                        std::time::Duration::from_millis(a.config.pointer_stop_hold_ms),
+                    ) {
+                        effects.retain(|effect| !matches!(effect, motion::Effect::Move { .. }));
+                    }
                     if a.devices.physical_contacts() {
                         if !was_physical || a.inertia.active() || pointer_running() {
                             a.stop_inertia();
@@ -920,6 +933,7 @@ fn run() -> Result<()> {
                 hwnd,
                 inertia: inertia::Inertia::default(),
                 pointer_inertia: inertia::PointerInertia::default(),
+                stop_hold: brake::StopHold::default(),
             })
         });
         let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard), Some(instance.into()), 0)?;

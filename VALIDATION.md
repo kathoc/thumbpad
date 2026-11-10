@@ -6,7 +6,7 @@ This is a prototype validation record, not a cross-device compatibility claim.
 
 - `cargo fmt --check`: passed.
 - `cargo clippy --locked --all-targets -- -D warnings`: passed.
-- `cargo test --locked`: 38 passed, 0 failed, 1 ignored (v0.1.5).
+- `cargo test --locked`: 41 passed, 0 failed, 1 ignored (v0.1.6).
 - Separate native timer probe: passed; 300 intervals, median 2108 us, p95 2554 us, max 2930 us on this PC. This probe generates no pointer input and does not measure rendering latency.
 - Optimized Windows x64 build: passed.
 - Inno Setup 6.7.4 installer compilation: passed.
@@ -63,6 +63,14 @@ Smoothness under actual flicks still requires user comparison with v0.1.4.
 The v0.1.5 installer completed with exit 0 at the default location. Installed
 bytes matched the release build and settings.json was byte-for-byte unchanged,
 including the user's enabled trackball mode. The updated application started.
+The user confirmed that v0.1.5 movement became smooth.
+v0.1.6 adds a 300ms pointer-output hold only when contact stops inertia in trackball
+mode. The HID baseline continues to update while movement is discarded; the first
+post-deadline sample rebases so retained finger displacement is not replayed.
+Tests cover deadline boundaries, resuming without lifting, non-extended deadlines,
+long sample gaps, normal contacts/mouse mode, and disabling the hold.
+The v0.1.6 installer completed with exit 0, installed bytes matched the release
+build, existing preferences were preserved, and pointer_stop_hold_ms migrated to 300.
 
 ## Native UI checks
 

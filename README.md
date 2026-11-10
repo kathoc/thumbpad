@@ -56,6 +56,8 @@ S または Shift+S を押して指を弾き、パッドから指を離すと、
 
 既定は通常のマウスモードです。トレイの `Trackball pointer mode (off = mouse)` をオンにすると、ポインターもトラックボール方式になります。
 指の移動でカーソルを動かし、指を離すと減速しながら継続します。パッドへ再接触すると慣性が止まります。
+慣性を止めた接触では、その時点から既定で300msポインターを固定します。その後は指を置いたまま移動を再開できます。
+固定中の指の移動は破棄し、解除後にまとめて移動させません。慣性が動いていないときの通常接触には適用しません。
 オフに戻すと通常のマウスモードへ即時復帰し、選択は保存されます。通常の端の開始除外も維持します。
 スクロール用のS/Lを押している間はスクロールが優先され、ポインターは動きません。
 ポインターの減速は `pointer_inertia_decay`、直接移動量は既存の `drag_pixels_per_pad_width` / `drag_pixels_per_pad_height` で調整します。
@@ -114,7 +116,8 @@ S または Shift+S を押して指を弾き、パッドから指を離すと、
   "inertia_enabled": true,
   "inertia_decay": 5.0,
   "pointer_mode": "mouse",
-  "pointer_inertia_decay": 5.0
+  "pointer_inertia_decay": 5.0,
+  "pointer_stop_hold_ms": 300
 }
 ```
 
@@ -124,6 +127,7 @@ S または Shift+S を押して指を弾き、パッドから指を離すと、
 移動・スクロール量は1–20000。`scroll_invert` で上下、`scroll_horizontal_invert` で左右を反転できます。
 左右スクロール量は `scroll_units_per_pad_width` で調整します。
 `inertia_decay` は1–20で、小さいほど慣性が長く、大きいほど早く減速します。慣性は最大3秒で終了します。
+`pointer_stop_hold_ms` は停止接触後にポインターを固定する時間で、0–2000ms。0で固定を無効にできます。
 既存の設定値は保持し、新しい項目の既定値だけをアップグレード時に追加します。
 現段階の割り当ては F/J/D/K/C/M/S/L と Shift+S / Shift+L 固定です。
 

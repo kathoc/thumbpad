@@ -42,6 +42,7 @@ pub struct Config {
     pub inertia_decay: f64,
     pub pointer_mode: PointerMode,
     pub pointer_inertia_decay: f64,
+    pub pointer_stop_hold_ms: u64,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -61,6 +62,7 @@ impl Default for Config {
             inertia_decay: 5.0,
             pointer_mode: PointerMode::Mouse,
             pointer_inertia_decay: 5.0,
+            pointer_stop_hold_ms: 300,
         }
     }
 }
@@ -77,6 +79,7 @@ impl Config {
             || !self.edge_top_percent.is_finite()
             || !(0.0..=80.0).contains(&self.edge_top_percent)
             || self.edge_grace_ms > 5000
+            || self.pointer_stop_hold_ms > 2000
             || !self.inertia_decay.is_finite()
             || !(1.0..=20.0).contains(&self.inertia_decay)
             || !self.pointer_inertia_decay.is_finite()
@@ -136,6 +139,7 @@ impl Config {
                             "inertia_decay",
                             "pointer_mode",
                             "pointer_inertia_decay",
+                            "pointer_stop_hold_ms",
                         ]
                         .iter()
                         .any(|key| value.get(key).is_none())
