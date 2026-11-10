@@ -1,0 +1,35 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt
+      - name: Verify tag matches Cargo version
+        shell: pwsh
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          if ($env:GITHUB_REF_NAME -ne "v$version") { throw 'Tag must match Cargo.toml version' }
+      - name: Build and test
+        shell: pwsh
+        run: |
+          if (!(Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe')) { choco install innosetup --yes --no-progress }
+          ./installer/build.ps1
+      - name: Publish release atomically
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $extra = @()
+          if ($tag.Contains('-') -or $tag -eq 'v0.1.0') { $extra += '--prerelease' }
+          gh release create $tag dist/thumbpad-setup-x64.exe dist/thumbpad-x64.exe dist/SHA256SUMS.txt --verify-tag --draft --title "Thumbpad $tag" --notes-file RELEASE_NOTES.md --generate-notes @extra
+          if ($LASTEXITCODE) { throw 'Release upload failed' }
+          gh release edit $tag --draft=false
+          if ($LASTEXITCODE) { throw 'Release publication failed' }
