@@ -15,13 +15,13 @@ use windows::{
     Win32::{
         Foundation::*,
         System::Threading::*,
-        UI::{HiDpi::*, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
+        UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
     },
     core::*,
 };
 enum Command {
-    Move(u64, i32, i32),
-    Start(u64, Box<PointerInertia>, f64),
+    Move(u64, usize, i32, i32),
+    Start(u64, usize, Box<PointerInertia>, f64),
     Stop(u64),
     Shutdown,
 }
@@ -53,6 +53,7 @@ impl Client {
     pub fn move_by(&self, dx: i32, dy: i32) {
         let _ = self.tx.send(Command::Move(
             self.generation.load(Ordering::Acquire),
+            unsafe { GetForegroundWindow().0 as usize },
             dx,
             dy,
         ));
@@ -65,6 +66,7 @@ impl Client {
             .tx
             .send(Command::Start(
                 self.generation.load(Ordering::Acquire),
+                unsafe { GetForegroundWindow().0 as usize },
                 Box::new(motion),
                 decay,
             ))
@@ -84,60 +86,33 @@ impl Client {
         )
     }
 }
-#[derive(Clone, Copy)]
-struct Desktop {
-    left: i32,
-    top: i32,
-    width: i32,
-    height: i32,
-}
-impl Desktop {
-    unsafe fn current() -> Self {
-        Self {
-            left: GetSystemMetrics(SM_XVIRTUALSCREEN),
-            top: GetSystemMetrics(SM_YVIRTUALSCREEN),
-            width: GetSystemMetrics(SM_CXVIRTUALSCREEN).max(1),
-            height: GetSystemMetrics(SM_CYVIRTUALSCREEN).max(1),
-        }
-    }
-    fn clamp(&self, x: f64, y: f64) -> (f64, f64) {
-        (
-            x.clamp(self.left as f64, (self.left + self.width - 1) as f64),
-            y.clamp(self.top as f64, (self.top + self.height - 1) as f64),
-        )
-    }
-    fn normalized(&self, x: f64, y: f64) -> (i32, i32) {
-        let (x, y) = self.clamp(x, y);
-        let axis = |p: f64, origin: i32, size: i32| {
-            (((p.round() - origin as f64 + 0.5) * 65536.0 / size as f64).floor() as i32)
-                .clamp(0, 65535)
-        };
-        (
-            axis(x, self.left, self.width),
-            axis(y, self.top, self.height),
-        )
-    }
-    unsafe fn send(&self, point: (f64, f64)) -> bool {
-        let (dx, dy) = self.normalized(point.0, point.1);
-        let input = INPUT {
-            r#type: INPUT_MOUSE,
-            Anonymous: INPUT_0 {
-                mi: MOUSEINPUT {
-                    dx,
-                    dy,
-                    dwFlags: MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
-                    dwExtraInfo: 0x54485044,
-                    ..Default::default()
-                },
+fn relative_input(dx: f64, dy: f64, remainder: &mut (f64, f64)) -> Option<INPUT> {
+    let x = remainder.0 + dx;
+    let y = remainder.1 + dy;
+    let dx = x.round() as i32;
+    let dy = y.round() as i32;
+    *remainder = (x - dx as f64, y - dy as f64);
+    (dx != 0 || dy != 0).then_some(INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx,
+                dy,
+                dwFlags: MOUSEEVENTF_MOVE,
+                dwExtraInfo: 0x54485044,
+                ..Default::default()
             },
-        };
-        SendInput(&[input], std::mem::size_of::<INPUT>() as i32) == 1
-    }
+        },
+    })
 }
-unsafe fn cursor() -> (f64, f64) {
-    let mut point = POINT::default();
-    let _ = GetPhysicalCursorPos(&mut point);
-    (point.x as f64, point.y as f64)
+unsafe fn deliver(remainder: &mut (f64, f64), dx: f64, dy: f64, foreground: HWND) -> bool {
+    if unsafe { GetForegroundWindow() } != foreground {
+        return true;
+    }
+    match relative_input(dx, dy, remainder) {
+        Some(input) => unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) == 1 },
+        None => true,
+    }
 }
 struct Run {
     generation: u64,
@@ -158,7 +133,6 @@ pub fn spawn() -> Result<(Client, JoinHandle<()>)> {
     };
     let shared = client.clone();
     let worker = std::thread::spawn(move || unsafe {
-        SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let timer = match CreateWaitableTimerExW(
             None,
             None,
@@ -176,8 +150,8 @@ pub fn spawn() -> Result<(Client, JoinHandle<()>)> {
             return;
         }
         let mut run: Option<Run> = None;
-        let mut position: Option<(f64, f64)> = None;
-        let mut desktop = Desktop::current();
+        let mut foreground = HWND::default();
+        let mut remainder = (0.0, 0.0);
         loop {
             let command = if run.is_none() {
                 match rx.recv() {
@@ -187,6 +161,15 @@ pub fn spawn() -> Result<(Client, JoinHandle<()>)> {
             } else {
                 rx.try_recv().ok()
             };
+            let current_foreground = GetForegroundWindow();
+            let changed = foreground != current_foreground;
+            if changed {
+                foreground = current_foreground;
+                run = None;
+                remainder = (0.0, 0.0);
+                shared.active.store(false, Ordering::Release);
+                let _ = CancelWaitableTimer(timer);
+            }
             if let Some(command) = command {
                 let generation = match &command {
                     Command::Move(g, ..) | Command::Start(g, ..) | Command::Stop(g) => *g,
@@ -195,27 +178,33 @@ pub fn spawn() -> Result<(Client, JoinHandle<()>)> {
                 if generation != shared.generation.load(Ordering::Acquire) {
                     continue;
                 }
+                if let Command::Move(_, window, ..) | Command::Start(_, window, ..) = &command
+                    && *window != foreground.0 as usize
+                {
+                    if matches!(command, Command::Start(..)) {
+                        shared.active.store(false, Ordering::Release);
+                    }
+                    continue;
+                }
                 match command {
                     Command::Stop(_) => {
                         run = None;
-                        position = None;
-                        desktop = Desktop::current();
+                        remainder = (0.0, 0.0);
                         shared.active.store(false, Ordering::Release);
                         let _ = CancelWaitableTimer(timer);
                     }
-                    Command::Move(_, dx, dy) => {
-                        let p = position.unwrap_or_else(|| cursor());
-                        let p = desktop.clamp(p.0 + dx as f64, p.1 + dy as f64);
-                        position = Some(p);
+                    Command::Move(_, _, dx, dy) => {
                         if generation == shared.generation.load(Ordering::Acquire)
-                            && !desktop.send(p)
+                            && !deliver(&mut remainder, dx as f64, dy as f64, foreground)
                         {
                             crate::ERRORS.fetch_add(1, Ordering::Relaxed);
                         }
                     }
-                    Command::Start(_, motion, decay) => {
-                        desktop = Desktop::current();
-                        position = Some(position.unwrap_or_else(|| cursor()));
+                    Command::Start(_, _, motion, decay) => {
+                        if changed {
+                            continue;
+                        }
+                        shared.active.store(true, Ordering::Release);
                         let due = -20_000i64; // 2ms, expressed in 100ns units. No process-wide timer-resolution change.
                         if SetWaitableTimer(timer, &due, 2, None, None, false).is_err() {
                             shared.active.store(false, Ordering::Release);
@@ -231,6 +220,9 @@ pub fn spawn() -> Result<(Client, JoinHandle<()>)> {
                     }
                     Command::Shutdown => unreachable!(),
                 }
+                continue;
+            }
+            if run.is_none() {
                 continue;
             }
             if WaitForSingleObject(timer, 250) != WAIT_OBJECT_0 {
@@ -255,15 +247,11 @@ pub fn spawn() -> Result<(Client, JoinHandle<()>)> {
                 Ordering::Relaxed,
             );
             current.last = now;
-            if let Some((dx, dy)) = current.motion.tick_braked(now, current.decay, gain) {
-                let p = position.unwrap_or_else(|| cursor());
-                let p = desktop.clamp(p.0 + dx, p.1 + dy);
-                position = Some(p);
-                if current.generation == shared.generation.load(Ordering::Acquire)
-                    && !desktop.send(p)
-                {
-                    crate::ERRORS.fetch_add(1, Ordering::Relaxed);
-                }
+            if let Some((dx, dy)) = current.motion.tick_braked(now, current.decay, gain)
+                && current.generation == shared.generation.load(Ordering::Acquire)
+                && !deliver(&mut remainder, dx, dy, foreground)
+            {
+                crate::ERRORS.fetch_add(1, Ordering::Relaxed);
             }
             if !current.motion.active() {
                 run = None;
@@ -290,19 +278,51 @@ pub fn spawn() -> Result<(Client, JoinHandle<()>)> {
 mod tests {
     use super::*;
     #[test]
-    fn absolute_coordinates_round_trip_across_negative_origin_desktops() {
-        let desktop = Desktop {
-            left: -3840,
-            top: -200,
-            width: 7680,
-            height: 2360,
-        };
-        for x in [-3840, -2000, -1, 0, 1920, 3839] {
-            let (nx, _) = desktop.normalized(x as f64, 100.0);
-            let actual = desktop.left + (nx as i64 * desktop.width as i64 / 65536) as i32;
-            assert_eq!(actual, x);
+    fn relative_output_keeps_deltas_and_fractional_motion_without_desktop_clamping() {
+        let mut remainder = (0.0, 0.0);
+        let input = relative_input(2400.0, -1800.0, &mut remainder).unwrap();
+        let mouse = unsafe { input.Anonymous.mi };
+        assert_eq!((mouse.dx, mouse.dy), (2400, -1800));
+        assert_eq!(mouse.dwFlags, MOUSEEVENTF_MOVE);
+        assert!(!mouse.dwFlags.contains(MOUSEEVENTF_ABSOLUTE));
+        let mut total = (0, 0);
+        for _ in 0..100 {
+            if let Some(input) = relative_input(0.1, -0.02, &mut remainder) {
+                let mouse = unsafe { input.Anonymous.mi };
+                total.0 += mouse.dx;
+                total.1 += mouse.dy;
+            }
         }
-        assert_eq!(desktop.clamp(-5000.0, 9000.0), (-3840.0, 2159.0));
+        assert_eq!(total, (10, -2));
+    }
+    #[test]
+    fn packetized_relative_coast_preserves_distance_and_diagonal_at_different_tick_rates() {
+        let t = Instant::now();
+        let coast = |ticks: &[u64]| {
+            let mut motion = PointerInertia::default();
+            for i in 0..6 {
+                motion.record(24.0, -0.48, t + std::time::Duration::from_millis(i * 8));
+            }
+            assert!(motion.release(t + std::time::Duration::from_millis(40), 12.0, 1.0));
+            let mut remainder = (0.0, 0.0);
+            let mut distance = (0, 0);
+            for tick in ticks {
+                if let Some((dx, dy)) =
+                    motion.tick_braked(t + std::time::Duration::from_millis(40 + tick), 5.0, 1.0)
+                    && let Some(input) = relative_input(dx, dy, &mut remainder)
+                {
+                    let mouse = unsafe { input.Anonymous.mi };
+                    distance.0 += mouse.dx;
+                    distance.1 += mouse.dy;
+                }
+            }
+            distance
+        };
+        let fine: Vec<_> = (1..=50).map(|i| i * 2).collect();
+        let a = coast(&fine);
+        let b = coast(&[16, 32, 48, 64, 80, 96, 100]);
+        assert_eq!(a, b);
+        assert!(a.0 > 0 && a.1 < 0);
     }
     #[test]
     #[ignore = "native timer timing probe; no pointer input is generated"]

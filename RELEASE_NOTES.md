@@ -1,11 +1,13 @@
-# Thumbpad v0.1.12
+# Thumbpad v0.1.13
 
-- Add CVB and SDF keyboard layouts with immediate switching and persistence from the tray menu.
-- Make CVB the default. Use V/N for left click, C/M for right click, G/H for middle click, B for vertical scroll, and Shift+B for horizontal scroll.
-- Preserve physical key ownership across layout changes and release held mouse buttons safely.
-- Adjust trackball inertia braking by contact position. Braking increases as a contact moves deeper into the top or side exclusion strips. A resting edge finger can remain while the operating finger lifts to coast.
-- Publish an English user guide with a Japanese translation linked at the top.
+- Use standard Windows relative mouse movement for all generated pointer motion and trackball inertia.
+- Preserve fractional movement and high-resolution inertia updates for smooth low-speed and diagonal motion.
+- Allow relative camera movement beyond desktop bounds using the same input format across applications.
+- Stop ongoing inertia when the foreground window changes and discard queued movement for another window.
+- Show relative output in diagnostics.
 
 ## Download
 
 Use `thumbpad-setup-x64.exe` for the Windows 11 x64 installer or `thumbpad-x64.exe` for the portable executable. A compatible built-in Precision Touchpad is required. The binaries are unsigned.
+
+Desktop movement follows Windows mouse sensitivity and acceleration settings. Applications receiving raw relative movement use their own sensitivity. Physical camera controls in Minecraft Bedrock and CAD applications still require in-app verification.

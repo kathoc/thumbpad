@@ -72,3 +72,5 @@ OS の版・ビルド、PC の型番、タッチパッドのドライバーバ�
 52. Switch layouts while a click key is held. The mouse button must release, the remaining key-up must be consumed, and a held typing key must not become a click on repeat.
 53. With one finger resting in an excluded strip, flick with another usable finger and lift only that finger. Move the resting contact from the boundary toward the physical edge; pointer inertia must travel less and stop sooner. Check top, left and right strips and retouch-to-stop.
 54. Check the English README, Japanese navigation link, Japanese guide and English-only release descriptions.
+
+55. Verify Minecraft Bedrock camera look, CAD pan/orbit, desktop dragging and trackball inertia through the same relative pointer output. Check slow diagonals, repeated turns beyond screen boundaries, and switching the foreground window during a glide. No per-app setting should be required.

@@ -210,7 +210,7 @@ unsafe fn inject_motion(effect: motion::Effect) {
         motion::Effect::Move { dx, dy } => MOUSEINPUT {
             dx,
             dy,
-            dwFlags: MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE,
+            dwFlags: MOUSEEVENTF_MOVE,
             ..Default::default()
         },
         motion::Effect::Wheel(delta) => {
@@ -361,7 +361,7 @@ impl App {
         );
         let (ticks, max_gap) = GLIDE.get().map(glide::Client::stats).unwrap_or_default();
         let text = format!(
-            "{text}\r\nPointer glide: high-resolution 2ms / ticks {ticks} / max gap {max_gap} us"
+            "{text}\r\nPointer glide: high-resolution 2ms / ticks {ticks} / max gap {max_gap} us / relative output"
         );
         let _ = SetWindowTextW(self.label, PCWSTR(wide(&text).as_ptr()));
     }

@@ -48,6 +48,14 @@ The default **mouse mode** uses normal Windows pointer movement. Turn on **Track
 
 Two usable fingers pause the trackball pointer for native touchpad gestures. Pointer movement resumes after the usable fingers have lifted and a new single-finger gesture begins.
 
+### Mouse input compatibility
+
+Thumbpad sends keyboard-assisted pointer movement and trackball inertia through standard Windows relative mouse input. The same input format is used for desktop applications, CAD tools, and game camera controls.
+
+Fractional movement is retained between updates, including slow and diagonal inertia. Relative motion is independent of desktop bounds, so camera rotation can continue beyond the edges of the screen. Switching the active window stops an ongoing glide.
+
+Desktop movement follows Windows mouse sensitivity and acceleration settings. Applications using raw relative movement apply their own sensitivity. You can adjust Thumbpad's sensitivity with **Trackball pointer faster / slower**.
+
 ## Edge protection
 
 By default, the left and right 12% and the top 15% of the pad are excluded from starting pointer control.
@@ -69,7 +77,7 @@ Right-click the tray icon and select **Edit settings** to open the built-in JSON
 | `key_mode` | `"cvb"` or `"sdf"`. Default `"cvb"`. |
 | `pointer_mode` | `"mouse"` or `"trackball"`. Default `"mouse"`. |
 | `trackball_pointer_speed` | Pointer sensitivity, 0.25–4.0. Default 1.25. |
-| `pointer_inertia_min_travel_px` | Minimum confirmed movement before pointer inertia can start, 0–1000 pixels. Default 12. |
+| `pointer_inertia_min_travel_px` | Minimum confirmed relative movement before pointer inertia can start, 0–1000 units. Default 12. |
 | `pointer_inertia_strength` | Pointer inertia strength, 0–2. Default 1. Set 0 to disable it. |
 | `pointer_inertia_decay` | Pointer deceleration, 1–20. Larger values stop sooner. Default 5. |
 | `pointer_stop_hold_enabled` / `pointer_stop_hold_ms` | Enable the stop-touch hold and set its duration, 0–2000 ms. |

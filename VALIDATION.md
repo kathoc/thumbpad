@@ -124,3 +124,7 @@ filter driver. No independent Authenticode or update-signing key is configured.
 ## v0.1.12
 
 54 automated tests passed, one native timer probe ignored. Regression coverage includes CVB/SDF mappings, CVB default and saved SDF loading, physical key ownership across layout changes, exclusion-depth braking at all three edges, physical contacts classified as palms, lift of an operating finger while an excluded contact remains, and reduced glide distance and duration. Formatting and clippy passed. The development PC does not expose contact width/height; braking uses position as requested. Physical game compatibility and the new edge-braking feel require user testing. All 12 prior release bodies and titles were verified to contain English text after translation.
+
+## v0.1.13
+
+55 automated tests passed, one native timer probe ignored. Relative INPUT construction is tested for signed unbounded deltas and fractional accumulation. Packetized coast distance and shallow diagonals match across 2ms and 16ms update schedules. All production pointer movement uses MOUSEEVENTF_MOVE without MOUSEEVENTF_ABSOLUTE. There is no process-name detection or application-specific output mode. Queued movements carry their foreground target, and a focus change cancels ongoing inertia. Windows mouse sensitivity/acceleration may affect desktop movement compared with the previous absolute-output release. Physical Minecraft Bedrock camera controls and CAD interaction still require in-app verification.
