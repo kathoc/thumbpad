@@ -307,7 +307,7 @@ impl App {
     }
     unsafe fn refresh(&self) {
         let text = format!(
-            "Thumbpad {}  /  {}\r\n\r\n{}\r\nHold a click key to drag; lift and reposition without releasing the key.\r\n{}\r\nCtrl+Alt+F12 pauses. Change scroll direction from the tray menu.\r\nCtrl / Alt / Win shortcuts pass through.\r\n\r\n{}\r\n\r\nClicks: {}   Input / hook failures: {}\r\nMax keyboard hook processing: {} us (not end-to-end latency)\r\n\r\nAutomatic update checks: {} (startup and every 24 hours)\r\nUpdates require confirmation before installation.\r\n\r\nRight-click the tray icon for settings and controls.\r\nClosing this window keeps Thumbpad running.",
+            "Thumbpad {}  /  {}\r\n\r\n{}\r\nHold a click key to drag; lift and reposition without releasing the key.\r\n{}\r\nCtrl+Alt+F12 pauses. Change scroll direction from the tray menu.\r\nCtrl / Alt / Shift work with mouse gestures. Win shortcuts pass through.\r\n\r\n{}\r\n\r\nClicks: {}   Input / hook failures: {}\r\nMax keyboard hook processing: {} us (not end-to-end latency)\r\n\r\nAutomatic update checks: {} (startup and every 24 hours)\r\nUpdates require confirmation before installation.\r\n\r\nRight-click the tray icon for settings and controls.\r\nClosing this window keeps Thumbpad running.",
             env!("CARGO_PKG_VERSION"),
             if self.enabled { "ENABLED" } else { "PAUSED" },
             self.config.key_mode.description(),
@@ -402,10 +402,11 @@ unsafe extern "system" fn keyboard(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
     };
     let selected = binding_for(k.vkCode, mode);
     let start = Instant::now();
+    // Preserve Ctrl/Alt/Shift for modified mouse gestures. Consume only the
+    // mapped key, so the application receives a mouse button rather than a
+    // Ctrl/Alt + letter shortcut. Windows-key shortcuts still pass through.
     let active = CLICK_ACTIVE.load(Ordering::Relaxed)
-        && ![VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN]
-            .iter()
-            .any(|vk| modifiers(vk.0 as i32));
+        && ![VK_LWIN, VK_RWIN].iter().any(|vk| modifiers(vk.0 as i32));
     let (consumed, action, dragging, scrolling) = ENGINE.with_borrow_mut(|e| {
         let (consumed, action) = e.key_physical(k.vkCode as usize, selected, down, active);
         (consumed, action, e.dragging(), e.scrolling())

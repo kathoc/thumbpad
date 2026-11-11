@@ -249,6 +249,37 @@ mod tests {
         assert!(!e.scrolling());
     }
     #[test]
+    fn modifier_keys_pass_through_while_mapped_drag_key_is_consumed() {
+        // Modifier events are ordinary unmapped keyboard events. They must not
+        // release or steal the captured mouse button, in either press order.
+        for modifier in [0x10, 0x11, 0x12] {
+            for binding in [0, 2] {
+                for modifier_first in [false, true] {
+                    let mut e = Engine::default();
+                    if modifier_first {
+                        assert_eq!(e.key_physical(modifier, None, true, true), (false, None));
+                    }
+                    let (consumed, action) = e.key_physical(0x56, Some(binding), true, true);
+                    assert!(consumed);
+                    assert!(action.unwrap().down);
+                    if !modifier_first {
+                        assert_eq!(e.key_physical(modifier, None, true, true), (false, None));
+                    }
+                    assert!(e.dragging());
+                    assert_eq!(
+                        e.key_physical(0x56, Some(binding), true, false),
+                        (true, None)
+                    );
+                    assert_eq!(e.key_physical(modifier, None, false, true), (false, None));
+                    let (consumed, action) = e.key_physical(0x56, Some(binding), false, false);
+                    assert!(consumed);
+                    assert!(!action.unwrap().down);
+                    assert!(!e.dragging());
+                }
+            }
+        }
+    }
+    #[test]
     fn drag_survives_contact_loss_and_repeat() {
         let mut e = Engine::default();
         assert_eq!(

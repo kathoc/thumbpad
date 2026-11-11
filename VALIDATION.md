@@ -128,3 +128,7 @@ filter driver. No independent Authenticode or update-signing key is configured.
 ## v0.1.13
 
 55 automated tests passed, one native timer probe ignored. Relative INPUT construction is tested for signed unbounded deltas and fractional accumulation. Packetized coast distance and shallow diagonals match across 2ms and 16ms update schedules. All production pointer movement uses MOUSEEVENTF_MOVE without MOUSEEVENTF_ABSOLUTE. There is no process-name detection or application-specific output mode. Queued movements carry their foreground target, and a focus change cancels ongoing inertia. Windows mouse sensitivity/acceleration may affect desktop movement compared with the previous absolute-output release. After installing this build, the user confirmed that physical touchpad camera movement works in Minecraft Bedrock. CAD interaction remains unverified.
+
+## v0.1.15
+
+57 automated tests passed, one native timer probe ignored; formatting and clippy passed. Removed the Ctrl/Alt bypass from click activation while retaining the Windows-key bypass. Regression coverage checks modifier-first and click-first ordering for left/right drag ownership, modifier pass-through, consumed click-key repeat and release after contact loss. Actual InDesign modified drag behavior still requires physical verification.

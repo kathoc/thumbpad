@@ -32,7 +32,7 @@ To uninstall, use Windows Settings → Apps → Installed apps. Your settings fi
 
 Touch the pad **before** pressing the action key. Keep a click key held to lift and reposition your finger during a long drag. Hold both left-click keys together if you want to transfer the hold from one hand to the other.
 
-Keys pressed before touching the pad keep their original keyboard behavior until released. Ctrl, Alt, and Windows-key shortcuts pass through. CVB mode leaves S, D, and F available for keyboard input, which can help with game controls. Games that require raw mouse input or block injected input may need separate compatibility testing.
+Keys pressed before touching the pad keep their original keyboard behavior until released. While touchpad controls are active, Ctrl, Alt, and Shift combine with the mapped mouse buttons for modified clicks and drags. Lift your finger before starting a keyboard shortcut that uses a mapped key. Windows-key shortcuts pass through. CVB mode leaves S, D, and F available for keyboard input, which can help with game controls. Games that require raw mouse input or block injected input may need separate compatibility testing.
 
 Scroll inversion is enabled by default. Change **Invert vertical scroll** and **Invert horizontal scroll** from the tray menu. Holding Shift switches the scroll axis during a gesture. Excel horizontal scrolling includes a compatibility path, and behavior can vary by Excel version and view.
 
