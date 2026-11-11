@@ -10,4 +10,4 @@
 
 Use `thumbpad-setup-x64.exe` for the Windows 11 x64 installer or `thumbpad-x64.exe` for the portable executable. A compatible built-in Precision Touchpad is required. The binaries are unsigned.
 
-Desktop movement follows Windows mouse sensitivity and acceleration settings. Applications receiving raw relative movement use their own sensitivity. Physical camera controls in Minecraft Bedrock and CAD applications still require in-app verification.
+Desktop movement follows Windows mouse sensitivity and acceleration settings. Applications receiving raw relative movement use their own sensitivity. Minecraft Bedrock camera movement was confirmed with a built-in touchpad after installing this release. CAD interaction still requires in-app verification.
