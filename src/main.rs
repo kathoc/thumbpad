@@ -528,6 +528,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         mode,
                         epoch,
                         a.config.motion_tuning(),
+                        a.enabled && a.config.edge_pointer_guard,
                     );
                     let now = Instant::now();
                     let stopped_by_touch = was_coasting && a.devices.physical_contacts();

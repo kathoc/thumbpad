@@ -16,6 +16,7 @@ struct Point {
 struct Contact {
     point: Point,
     accepted: bool,
+    edge_start: bool,
 }
 struct Gate {
     contacts: HashMap<u32, Contact>,
@@ -65,12 +66,30 @@ impl Gate {
                 Contact {
                     point,
                     accepted: interior || recent || self.continuing,
+                    edge_start: !interior,
                 },
             );
         }
     }
+    fn pointer_contacts(&self) -> impl Iterator<Item = (&u32, &Contact)> {
+        let interior = self.contacts.values().any(|c| c.accepted && !c.edge_start);
+        self.contacts
+            .iter()
+            .filter(move |(_, c)| c.accepted && (!interior || !c.edge_start))
+    }
     fn touching(&self) -> bool {
-        self.contacts.values().any(|c| c.accepted)
+        self.pointer_contacts().next().is_some()
+    }
+    fn mixed_contacts(&self) -> bool {
+        let usable = self.pointer_contacts().count();
+        usable > 0 && usable < self.contacts.len()
+    }
+    fn motion_mode(&self, mode: Mode, pointer_guard: bool) -> Mode {
+        if mode == Mode::Off && pointer_guard && self.mixed_contacts() {
+            Mode::Pointer
+        } else {
+            mode
+        }
     }
     fn pointer_point(&self, mode: Mode) -> Option<(u32, f64, f64)> {
         if mode == Mode::Pointer && self.multitouch_gesture {
@@ -80,9 +99,7 @@ impl Gate {
         }
     }
     fn primary(&self) -> Option<(u32, f64, f64)> {
-        self.contacts
-            .iter()
-            .filter(|(_, c)| c.accepted)
+        self.pointer_contacts()
             .min_by_key(|(id, _)| **id)
             .map(|(id, c)| (*id, c.point.x, c.point.y))
     }
@@ -133,8 +150,15 @@ impl Frame {
         for sample in &self.samples {
             gate.sample(sample.id, sample.point, sample.down, now);
         }
+        // An edge contact overlapping an interior-start finger stays excluded
+        // after that finger lifts. Reconnect grace applies to a fresh contact.
+        if !gate.continuing && gate.contacts.values().any(|c| c.accepted && !c.edge_start) {
+            for contact in gate.contacts.values_mut().filter(|c| c.edge_start) {
+                contact.accepted = false;
+            }
+        }
         gate.multitouch_gesture =
-            !gate.contacts.is_empty() && (gate.multitouch_gesture || gate.contacts.len() > 1);
+            gate.touching() && (gate.multitouch_gesture || gate.pointer_contacts().count() > 1);
         self.expected = 0;
         self.samples.clear();
         self.physical = false;
@@ -427,12 +451,16 @@ impl Devices {
         self.devices.values().flatten().any(|d| d.gate.touching())
     }
     pub fn block_pointer(&self) -> bool {
-        !self.touching()
-            && self
-                .devices
-                .values()
-                .flatten()
-                .any(|d| !d.gate.contacts.is_empty())
+        self.devices
+            .values()
+            .flatten()
+            .any(|d| d.gate.mixed_contacts())
+            || !self.touching()
+                && self
+                    .devices
+                    .values()
+                    .flatten()
+                    .any(|d| !d.gate.contacts.is_empty())
     }
     pub fn has_contacts(&self) -> bool {
         self.devices
@@ -455,6 +483,7 @@ impl Devices {
         mode: Mode,
         epoch: u64,
         tuning: Tuning,
+        pointer_guard: bool,
     ) -> (Vec<Effect>, bool) {
         let mut bytes = 0;
         let header = size_of::<RAWINPUTHEADER>() as u32;
@@ -507,11 +536,13 @@ impl Devices {
         for report in reports.chunks_exact_mut(size) {
             if device.report(report) {
                 complete = true;
-                if let Some(effect) =
-                    device
-                        .motion
-                        .feed(mode, epoch, device.gate.pointer_point(mode), tuning)
-                {
+                let effective_mode = device.gate.motion_mode(mode, pointer_guard);
+                if let Some(effect) = device.motion.feed(
+                    effective_mode,
+                    epoch,
+                    device.gate.pointer_point(effective_mode),
+                    tuning,
+                ) {
                     effects.push(effect);
                 }
             }
@@ -657,6 +688,63 @@ mod tests {
         assert!(g.contacts.is_empty());
     }
     #[test]
+    fn excluded_fingers_do_not_block_a_separate_usable_finger() {
+        let t = Instant::now();
+        for edge in [p(0.01, 0.5), p(0.99, 0.5), p(0.5, 0.01)] {
+            for edge_first in [true, false] {
+                let mut gate = Gate::new(12.0, 15.0, 500);
+                let mut frame = Frame::default();
+                let mut motion = Motion::default();
+                let tuning = Tuning {
+                    pointer_deadband: 0.0,
+                    drag_x: 1600.0,
+                    drag_y: 1000.0,
+                    wheel: 2400.0,
+                    invert: true,
+                    wheel_x: 2400.0,
+                    horizontal_invert: true,
+                };
+                let mut commit = |gate: &mut Gate, samples: Vec<Sample>| {
+                    frame.start(samples.len());
+                    frame.samples = samples;
+                    assert!(frame.commit(gate, t));
+                };
+                let sample = |id, point| Sample {
+                    id,
+                    point,
+                    down: true,
+                };
+                if edge_first {
+                    commit(&mut gate, vec![sample(0, edge)]);
+                    assert!(!gate.touching());
+                    assert_eq!(gate.pointer_point(Mode::Pointer), None);
+                } else {
+                    commit(&mut gate, vec![sample(1, p(0.4, 0.5))]);
+                    commit(&mut gate, vec![sample(1, p(0.5, 0.5))]);
+                }
+                commit(&mut gate, vec![sample(0, edge), sample(1, p(0.5, 0.5))]);
+                assert!(!gate.multitouch_gesture);
+                assert!(gate.mixed_contacts());
+                assert_eq!(gate.motion_mode(Mode::Off, true), Mode::Pointer);
+                assert_eq!(gate.motion_mode(Mode::Off, false), Mode::Off);
+                assert_eq!(gate.motion_mode(Mode::Drag, true), Mode::Drag);
+                assert_eq!(gate.primary().unwrap().0, 1);
+                assert_eq!(
+                    motion.feed(Mode::Pointer, 0, gate.pointer_point(Mode::Pointer), tuning),
+                    None
+                );
+                commit(&mut gate, vec![sample(0, edge), sample(1, p(0.6, 0.5))]);
+                assert_eq!(
+                    motion.feed(Mode::Pointer, 0, gate.pointer_point(Mode::Pointer), tuning),
+                    Some(Effect::Move { dx: 160, dy: 0 })
+                );
+                commit(&mut gate, vec![sample(0, edge)]);
+                assert!(!gate.touching());
+                assert_eq!(gate.pointer_point(Mode::Pointer), None);
+            }
+        }
+    }
+    #[test]
     fn two_finger_gesture_blocks_pointer_until_all_fingers_lift() {
         let mut g = Gate::new(12.0, 15.0, 500);
         let t = Instant::now();
@@ -691,8 +779,8 @@ mod tests {
                 .feed(Mode::Pointer, 0, g.pointer_point(Mode::Pointer), tuning)
                 .is_some()
         );
-        // The second finger counts even when it started in the excluded edge.
-        set(&mut g, &mut frame, &[(1, 0.6), (2, 0.99)]);
+        // Two usable fingers form a scrolling gesture.
+        set(&mut g, &mut frame, &[(1, 0.6), (2, 0.7)]);
         assert!(g.multitouch_gesture);
         assert_eq!(
             motion.feed(Mode::Pointer, 0, g.pointer_point(Mode::Pointer), tuning),

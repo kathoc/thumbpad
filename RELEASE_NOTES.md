@@ -1,3 +1,9 @@
+# v0.1.11
+
+- Allow pointer motion from a usable finger while other fingers rest in excluded edge-start regions.
+- Count usable contacts for native two-finger gesture suppression and select an interior-start finger before edge-start contacts.
+- Route mixed edge/interior contact movement through the accepted finger in mouse mode as well.
+
 # v0.1.10
 
 - Filter small trackball pointer jitter without buffering cursor motion.
