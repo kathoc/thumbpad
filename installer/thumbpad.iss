@@ -1,6 +1,6 @@
 #define AppName "Thumbpad"
 #ifndef AppVersion
-  #define AppVersion "0.1.11"
+  #define AppVersion "0.1.12"
 #endif
 #ifndef BuildDir
   #define BuildDir "..\target\release"
@@ -37,6 +37,7 @@ Name: "startup"; Description: "Start Thumbpad with Windows"; Flags: unchecked
 [Files]
 Source: "{#BuildDir}\thumbpad.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\README.ja.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\TESTING.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\VALIDATION.md"; DestDir: "{app}"; Flags: ignoreversion
@@ -52,6 +53,7 @@ Filename: "{app}\thumbpad.exe"; Parameters: "--background"; WorkingDir: "{app}";
 Filename: "{app}\thumbpad.exe"; Parameters: "--quit"; Flags: runhidden waituntilterminated; RunOnceId: "CloseThumbpad"
 [UninstallDelete]
 Type: files; Name: "{app}\README.md"
+Type: files; Name: "{app}\README.ja.md"
 [Code]
 function IsUpgrade: Boolean;
 var

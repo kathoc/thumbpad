@@ -39,6 +39,8 @@ const POINTER_MODE: usize = 111;
 const POINTER_STOP_HOLD: usize = 112;
 const POINTER_FASTER: usize = 113;
 const POINTER_SLOWER: usize = 114;
+const KEY_CVB: usize = 115;
+const KEY_SDF: usize = 116;
 const INERTIA_TIMER: usize = 2;
 struct App {
     devices: touchpad::Devices,
@@ -54,6 +56,7 @@ thread_local! { static APP: RefCell<Option<App>> = const { RefCell::new(None) };
 thread_local! { static ENGINE: RefCell<Engine> = RefCell::new(Engine::default()); }
 // Hooks may interrupt User32 calls while APP is borrowed. They must never borrow
 // APP, and must drop the engine borrow before making any Windows API call.
+static CVB_MODE: AtomicBool = AtomicBool::new(true);
 static CLICK_ACTIVE: AtomicBool = AtomicBool::new(false);
 static POINTER_BLOCK: AtomicBool = AtomicBool::new(false);
 static CLICKS: AtomicU64 = AtomicU64::new(0);
@@ -108,6 +111,8 @@ fn flip_setting(config: &mut update::Config, command: usize) {
                 ((config.trackball_pointer_speed * 100.0 + step * 100.0).round() / 100.0)
                     .clamp(0.25, 4.0);
         }
+        KEY_CVB => config.key_mode = update::KeyMode::Cvb,
+        KEY_SDF => config.key_mode = update::KeyMode::Sdf,
         AUTO_UPDATE => config.auto_update = !config.auto_update,
         INVERT_SCROLL => config.scroll_invert = !config.scroll_invert,
         INVERT_HSCROLL => config.scroll_horizontal_invert = !config.scroll_horizontal_invert,
@@ -271,6 +276,10 @@ impl App {
         }
     }
     fn publish(&self) {
+        CVB_MODE.store(
+            self.config.key_mode == update::KeyMode::Cvb,
+            Ordering::Relaxed,
+        );
         TRACKBALL_MODE.store(
             self.enabled && self.config.pointer_mode == update::PointerMode::Trackball,
             Ordering::Relaxed,
@@ -298,9 +307,11 @@ impl App {
     }
     unsafe fn refresh(&self) {
         let text = format!(
-            "Thumbpad {}  /  {}\r\n\r\nTouch: F/J = left, D/K = right, C/M = middle, S/L = scroll.\r\nHold a click key to drag; lift and reposition without releasing the key.\r\nShift+S or Shift+L = horizontal scroll (rightward motion scrolls left by default).\r\nCtrl+Alt+F12 pauses. Change scroll direction from the tray menu.\r\nCtrl / Alt / Win shortcuts pass through.\r\n\r\n{}\r\n\r\nClicks: {}   Input / hook failures: {}\r\nMax keyboard hook processing: {} us (not end-to-end latency)\r\n\r\nAutomatic update checks: {} (startup and every 24 hours)\r\nUpdates require confirmation before installation.\r\n\r\nRight-click the tray icon for settings and controls.\r\nClosing this window keeps Thumbpad running.",
+            "Thumbpad {}  /  {}\r\n\r\n{}\r\nHold a click key to drag; lift and reposition without releasing the key.\r\n{}\r\nCtrl+Alt+F12 pauses. Change scroll direction from the tray menu.\r\nCtrl / Alt / Win shortcuts pass through.\r\n\r\n{}\r\n\r\nClicks: {}   Input / hook failures: {}\r\nMax keyboard hook processing: {} us (not end-to-end latency)\r\n\r\nAutomatic update checks: {} (startup and every 24 hours)\r\nUpdates require confirmation before installation.\r\n\r\nRight-click the tray icon for settings and controls.\r\nClosing this window keeps Thumbpad running.",
             env!("CARGO_PKG_VERSION"),
             if self.enabled { "ENABLED" } else { "PAUSED" },
+            self.config.key_mode.description(),
+            self.config.key_mode.horizontal_description(),
             self.devices.summary(),
             CLICKS.load(Ordering::Relaxed),
             ERRORS.load(Ordering::Relaxed),
@@ -381,16 +392,22 @@ unsafe extern "system" fn keyboard(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
         publish_interaction(dragging, scrolling, shift);
         return CallNextHookEx(None, code, wp, lp);
     }
-    let Some(index) = binding(k.vkCode) else {
+    if k.vkCode >= 256 {
         return CallNextHookEx(None, code, wp, lp);
+    }
+    let mode = if CVB_MODE.load(Ordering::Relaxed) {
+        update::KeyMode::Cvb
+    } else {
+        update::KeyMode::Sdf
     };
+    let selected = binding_for(k.vkCode, mode);
     let start = Instant::now();
     let active = CLICK_ACTIVE.load(Ordering::Relaxed)
         && ![VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN]
             .iter()
             .any(|vk| modifiers(vk.0 as i32));
     let (consumed, action, dragging, scrolling) = ENGINE.with_borrow_mut(|e| {
-        let (consumed, action) = e.key(index, down, active);
+        let (consumed, action) = e.key_physical(k.vkCode as usize, selected, down, active);
         (consumed, action, e.dragging(), e.scrolling())
     });
     publish_interaction(dragging, scrolling, modifiers(VK_SHIFT.0 as i32));
@@ -408,6 +425,21 @@ unsafe extern "system" fn keyboard(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
         LRESULT(1)
     } else {
         CallNextHookEx(None, code, wp, lp)
+    }
+}
+fn binding_for(vk: u32, mode: update::KeyMode) -> Option<usize> {
+    if mode == update::KeyMode::Sdf {
+        return binding(vk);
+    }
+    match vk {
+        0x56 => Some(0), // V
+        0x4e => Some(1), // N
+        0x43 => Some(2), // C
+        0x4d => Some(3), // M
+        0x42 => Some(4), // B
+        0x47 => Some(5), // G
+        0x48 => Some(7), // H
+        _ => None,
     }
 }
 fn binding(vk: u32) -> Option<usize> {
@@ -497,7 +529,7 @@ unsafe fn tray(hwnd: HWND, add: bool) {
         hIcon: LoadIconW(None, IDI_APPLICATION).unwrap_or_default(),
         ..Default::default()
     };
-    let tip = wide("Thumbpad - F/J: left, D/K: right, C/M: middle, S/L: scroll");
+    let tip = wide("Thumbpad - CVB / SDF keyboard mouse controls");
     data.szTip[..tip.len()].copy_from_slice(&tip);
     let _ = Shell_NotifyIconW(if add { NIM_ADD } else { NIM_DELETE }, &data);
 }
@@ -522,6 +554,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         key_mode
                     };
                     let was_physical = a.devices.physical_contacts();
+                    let was_pointer = a.devices.pointer_contact_active(mode);
+                    let contact_generation = a.devices.contact_generation();
+                    let previous_edge_gain = a.devices.edge_inertia_gain();
                     let was_coasting = pointer_running() || a.inertia.active();
                     let (mut effects, complete) = a.devices.input(
                         HRAWINPUT(lp.0 as _),
@@ -531,7 +566,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         a.enabled && a.config.edge_pointer_guard,
                     );
                     let now = Instant::now();
-                    let stopped_by_touch = was_coasting && a.devices.physical_contacts();
+                    let new_contact = contact_generation != a.devices.contact_generation()
+                        || (!was_physical && a.devices.physical_contacts());
+                    let pointer_contact = a.devices.pointer_contact_active(mode);
+                    if let Some(worker) = GLIDE.get()
+                        && let Some(gain) = a.devices.edge_inertia_gain().or(previous_edge_gain)
+                    {
+                        worker.set_brake_gain(gain);
+                    }
+                    let stopped_by_touch = was_coasting && new_contact;
                     if a.stop_hold.suppress(
                         now,
                         trackball,
@@ -545,7 +588,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         effects.retain(|effect| !matches!(effect, motion::Effect::Move { .. }));
                     }
                     if a.devices.physical_contacts() {
-                        if !was_physical || a.inertia.active() || pointer_running() {
+                        if new_contact
+                            || a.inertia.active()
+                            || (pointer_contact && pointer_running())
+                        {
                             a.stop_inertia();
                         }
                         if complete && a.enabled {
@@ -562,41 +608,47 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                                 })
                                 .sum();
                             a.inertia.record(axis, delta, now);
-                            if trackball
-                                && !(mode == motion::Mode::Pointer
-                                    && a.devices.pointer_gesture_blocked())
-                                && matches!(mode, motion::Mode::Pointer | motion::Mode::Drag)
-                            {
-                                let (dx, dy) =
-                                    effects.iter().fold((0.0, 0.0), |(x, y), e| match e {
+                        }
+                    } else if was_physical && a.enabled {
+                        let scroll = a.config.inertia_enabled && a.inertia.release(now);
+                        if scroll && SetTimer(Some(hwnd), INERTIA_TIMER, 16, None) == 0 {
+                            a.stop_inertia();
+                            ERRORS.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    if complete
+                        && a.enabled
+                        && trackball
+                        && matches!(mode, motion::Mode::Pointer | motion::Mode::Drag)
+                    {
+                        if pointer_contact {
+                            let (dx, dy) =
+                                effects
+                                    .iter()
+                                    .fold((0.0, 0.0), |(x, y), effect| match effect {
                                         motion::Effect::Move { dx, dy } => {
                                             (x + *dx as f64, y + *dy as f64)
                                         }
                                         _ => (x, y),
                                     });
-                                a.pointer_inertia.record(dx, dy, now);
-                            } else {
-                                a.pointer_inertia.stop();
-                            }
-                        }
-                    } else if was_physical && a.enabled {
-                        let scroll = a.config.inertia_enabled && a.inertia.release(now);
-                        let pointer = trackball
-                            && a.pointer_inertia.release(
+                            a.pointer_inertia.record(dx, dy, now);
+                        } else if was_pointer && !a.devices.pointer_gesture_blocked() {
+                            let pointer = a.pointer_inertia.release(
                                 now,
                                 a.config.pointer_inertia_min_travel_px,
                                 a.config.pointer_inertia_strength,
                             );
-                        if pointer && let Some(worker) = GLIDE.get() {
-                            worker.start(
-                                std::mem::take(&mut a.pointer_inertia),
-                                a.config.pointer_inertia_decay,
-                            );
+                            if pointer && let Some(worker) = GLIDE.get() {
+                                worker.start(
+                                    std::mem::take(&mut a.pointer_inertia),
+                                    a.config.pointer_inertia_decay,
+                                );
+                            }
+                        } else {
+                            a.pointer_inertia.stop();
                         }
-                        if scroll && SetTimer(Some(hwnd), INERTIA_TIMER, 16, None) == 0 {
-                            a.stop_inertia();
-                            ERRORS.fetch_add(1, Ordering::Relaxed);
-                        }
+                    } else if complete {
+                        a.pointer_inertia.stop();
                     }
                     a.publish();
                     effects
@@ -683,7 +735,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 }
                 UPDATE => update::check_async(true),
                 command @ (AUTO_UPDATE | INVERT_SCROLL | INVERT_HSCROLL | INERTIA_ENABLED
-                | POINTER_MODE | POINTER_STOP_HOLD | POINTER_FASTER | POINTER_SLOWER) => {
+                | POINTER_MODE | POINTER_STOP_HOLD | POINTER_FASTER | POINTER_SLOWER
+                | KEY_CVB | KEY_SDF) => {
                     let error = APP.with_borrow_mut(|app| {
                         let a = app.as_mut()?;
                         let previous = a.config.clone();
@@ -691,6 +744,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         let error = a.config.save().err().map(|e| e.to_string());
                         if error.is_some() {
                             a.config = previous;
+                        }
+                        if error.is_none() && matches!(command, KEY_CVB | KEY_SDF) {
+                            a.release(false);
                         }
                         if command == POINTER_STOP_HOLD {
                             a.stop_hold.reset();
@@ -739,13 +795,20 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                             if a.enabled { w!("Pause") } else { w!("Resume") },
                         );
                         let _ = AppendMenuW(menu, MF_STRING, STATUS, w!("Status / diagnostics"));
-                        let _ = AppendMenuW(
-                            menu,
-                            MF_STRING,
-                            SETTINGS,
-                            w!("Edit settings (restart to apply)"),
-                        );
+                        let _ = AppendMenuW(menu, MF_STRING, SETTINGS, w!("Edit settings"));
                         let _ = AppendMenuW(menu, MF_STRING, UPDATE, w!("Check for updates"));
+                        for (id, label, mode) in [
+                            (KEY_CVB, w!("CVB mode"), update::KeyMode::Cvb),
+                            (KEY_SDF, w!("SDF mode"), update::KeyMode::Sdf),
+                        ] {
+                            let checked = if a.config.key_mode == mode {
+                                MF_CHECKED
+                            } else {
+                                MF_UNCHECKED
+                            };
+                            let _ = AppendMenuW(menu, MF_STRING | checked, id, label);
+                        }
+
                         let _ = AppendMenuW(
                             menu,
                             MF_STRING
@@ -1055,6 +1118,32 @@ mod callback_tests {
         assert_eq!(((wp.0 >> 16) & 0xffff) as u16 as i16, -120);
         assert_eq!(binding(0x4c), Some(6));
         assert_eq!(binding(0x4d), Some(7));
+    }
+    #[test]
+    fn cvb_and_sdf_modes_have_distinct_bindings_and_default_to_cvb() {
+        use update::KeyMode::{Cvb, Sdf};
+        assert_eq!(update::Config::default().key_mode, Cvb);
+        for (key, index) in [
+            (0x56, 0),
+            (0x4e, 1),
+            (0x43, 2),
+            (0x4d, 3),
+            (0x42, 4),
+            (0x47, 5),
+            (0x48, 7),
+        ] {
+            assert_eq!(binding_for(key, Cvb), Some(index));
+        }
+        for key in [0x53, 0x44, 0x46, 0x4a, 0x4b, 0x4c] {
+            assert_eq!(binding_for(key, Cvb), None);
+        }
+        assert_eq!(binding_for(0x43, Sdf), Some(5));
+        assert_eq!(binding_for(0x4d, Sdf), Some(7));
+        assert_eq!(binding_for(0x42, Sdf), None);
+        let saved: update::Config = serde_json::from_str(r#"{"key_mode":"sdf"}"#).unwrap();
+        assert_eq!(saved.key_mode, Sdf);
+        let upgraded: update::Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(upgraded.key_mode, Cvb);
     }
     #[test]
     fn s_replaces_g_as_the_scroll_binding() {

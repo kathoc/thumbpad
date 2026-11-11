@@ -1,9 +1,19 @@
 //! Key ownership is fixed at the first physical down, including across repeats.
-#[derive(Default)]
 pub struct Engine {
-    down: [bool; 8],
-    captured: [bool; 8],
-    held: [bool; 8],
+    down: [bool; 256],
+    captured: [bool; 256],
+    held: [bool; 256],
+    bindings: [Option<usize>; 256],
+}
+impl Default for Engine {
+    fn default() -> Self {
+        Self {
+            down: [false; 256],
+            captured: [false; 256],
+            held: [false; 256],
+            bindings: [None; 256],
+        }
+    }
 }
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Button {
@@ -29,11 +39,25 @@ impl Engine {
         self.held
             .iter()
             .enumerate()
-            .filter(|(i, held)| **held && Self::button(*i) == Some(b))
+            .filter(|(i, held)| **held && self.bindings[*i].and_then(Self::button) == Some(b))
             .count()
     }
+    #[cfg(test)]
     pub fn key(&mut self, i: usize, down: bool, active: bool) -> (bool, Option<Action>) {
-        let button = Self::button(i);
+        self.key_physical(i, Some(i), down, active)
+    }
+    pub fn key_physical(
+        &mut self,
+        i: usize,
+        binding: Option<usize>,
+        down: bool,
+        active: bool,
+    ) -> (bool, Option<Action>) {
+        if down && !self.down[i] {
+            self.bindings[i] = binding;
+        }
+        let button = self.bindings[i].and_then(Self::button);
+        let active = active && self.bindings[i].is_some();
         if down {
             if self.down[i] {
                 return (self.captured[i], None);
@@ -77,7 +101,7 @@ impl Engine {
                 down: false,
             })
             .collect();
-        self.held = [false; 8];
+        self.held = [false; 256];
         actions
     }
     pub fn reset(&mut self) -> Vec<Action> {
@@ -89,15 +113,59 @@ impl Engine {
         self.held
             .iter()
             .enumerate()
-            .any(|(i, held)| i != 4 && i != 6 && *held)
+            .any(|(i, held)| *held && self.bindings[i].and_then(Self::button).is_some())
     }
     pub fn scrolling(&self) -> bool {
-        self.held[4] || self.held[6]
+        self.held
+            .iter()
+            .enumerate()
+            .any(|(i, held)| *held && matches!(self.bindings[i], Some(4 | 6)))
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn layout_change_releases_old_buttons_and_keeps_physical_key_ownership() {
+        let mut e = Engine::default();
+        assert_eq!(
+            e.key_physical(0x46, Some(0), true, true).1,
+            Some(Action {
+                button: Button::Left,
+                down: true
+            })
+        );
+        assert_eq!(
+            e.release(),
+            vec![Action {
+                button: Button::Left,
+                down: false
+            }]
+        );
+        assert_eq!(
+            e.key_physical(0x56, Some(0), true, true).1,
+            Some(Action {
+                button: Button::Left,
+                down: true
+            })
+        );
+        assert_eq!(e.key_physical(0x46, None, false, true), (true, None));
+        assert!(e.dragging());
+        assert_eq!(
+            e.key_physical(0x56, Some(0), false, true).1,
+            Some(Action {
+                button: Button::Left,
+                down: false
+            })
+        );
+        assert_eq!(e.key_physical(0x53, None, true, true), (false, None));
+        e.release();
+        assert_eq!(e.key_physical(0x53, Some(4), true, true), (false, None));
+        assert!(!e.scrolling());
+        assert_eq!(e.key_physical(0x53, Some(4), false, true), (false, None));
+        e.key_physical(0x53, Some(4), true, true);
+        assert!(e.scrolling());
+    }
     #[test]
     fn l_and_m_aliases_share_scroll_and_middle_ownership() {
         let mut e = Engine::default();

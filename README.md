@@ -1,207 +1,111 @@
+[日本語](README.ja.md)
+
 # Thumbpad
 
-Windows 11 内蔵 Precision Touchpad 向けの、Rust 製 ThumbSense 風プロトタイプです。
-ドライバーの追加なしで、タッチパッドへの接触中にホームポジションのキーでクリックできます。
-元の ThumbSense とは独立した実装です。
+Click, drag, and scroll with keyboard keys while touching your laptop's touchpad. Thumbpad runs in the Windows system tray and includes an optional trackball pointer mode.
 
-**v0.1.x は実験段階です。複数メーカーの実機検証・エンドツーエンドの遅延測定は未完了です。**
+Thumbpad is an independent application inspired by ThumbSense. It is an experimental Windows 11 utility for built-in Precision Touchpads. Compatibility across laptop models is still being tested.
 
-## インストール
+## Install
 
-[Releases](https://github.com/kathoc/thumbpad/releases) の `thumbpad-setup-x64.exe` を実行します。
-Windows 11 x64 が対象です。ARM64 では x64 エミュレーション経由となり、未検証です。
-管理者権限は不要で、`%LOCALAPPDATA%\Programs\Thumbpad` にインストールします。
-アンインストールは Windows の「インストールされているアプリ」から行えます。
-起動時常駐は任意です。設定ファイルはアンインストール後も保持します。
+1. Download **thumbpad-setup-x64.exe** from the [latest release](https://github.com/kathoc/thumbpad/releases/latest).
+2. Run the installer and launch Thumbpad.
+3. Touch the touchpad, then press a click or scroll key.
 
-現在の配布ファイルには Authenticode コード署名がありません。
+The installer targets Windows 11 x64 and installs for your Windows account. You can optionally enable **Start with Windows** from the tray menu. Releases are currently unsigned.
 
-## 操作
+To uninstall, use Windows Settings → Apps → Installed apps. Your settings file is retained.
 
-| 操作 | 動作 |
+## Keyboard controls
+
+**CVB mode is the default.** Right-click the tray icon and choose **CVB mode** or **SDF mode**. The selection is saved and takes effect immediately.
+
+| Action | CVB mode | SDF mode |
+| --- | --- | --- |
+| Left click | V or N | F or J |
+| Right click | C or M | D or K |
+| Middle click | G or H | C or M |
+| Vertical scroll | Hold B and move a finger vertically | Hold S or L and move a finger vertically |
+| Horizontal scroll | Hold Shift+B and move horizontally | Hold Shift+S or Shift+L and move horizontally |
+| Drag | Hold a click key and move a finger | Hold a click key and move a finger |
+| Pause / resume Thumbpad | Ctrl+Alt+F12 | Ctrl+Alt+F12 |
+
+Touch the pad **before** pressing the action key. Keep a click key held to lift and reposition your finger during a long drag. Hold both left-click keys together if you want to transfer the hold from one hand to the other.
+
+Keys pressed before touching the pad keep their original keyboard behavior until released. Ctrl, Alt, and Windows-key shortcuts pass through. CVB mode leaves S, D, and F available for keyboard input, which can help with game controls. Games that require raw mouse input or block injected input may need separate compatibility testing.
+
+Scroll inversion is enabled by default. Change **Invert vertical scroll** and **Invert horizontal scroll** from the tray menu. Holding Shift switches the scroll axis during a gesture. Excel horizontal scrolling includes a compatibility path, and behavior can vary by Excel version and view.
+
+## Pointer and scrolling
+
+The default **mouse mode** uses normal Windows pointer movement. Turn on **Trackball pointer mode (off = mouse)** in the tray menu to keep the pointer moving after a flick.
+
+- Touch the pad again to stop inertia.
+- Small movements have reduced inertia. Stationary jitter and a single lift sample are filtered.
+- **Trackball pointer faster / slower** adjusts pointer sensitivity.
+- **Hold pointer after inertia stop** enables a brief hold after touching to stop a glide. Its default duration is 100 ms.
+- **Inertial scrolling** toggles momentum for keyboard-assisted vertical and horizontal scrolling.
+
+Two usable fingers pause the trackball pointer for native touchpad gestures. Pointer movement resumes after the usable fingers have lifted and a new single-finger gesture begins.
+
+## Edge protection
+
+By default, the left and right 12% and the top 15% of the pad are excluded from starting pointer control.
+
+- A finger that starts in the usable area can move all the way to an edge.
+- A finger that starts in an excluded area is ignored until it lifts.
+- You can rest a finger in an excluded area and move a separate finger that starts in the usable area.
+- A 500 ms reconnect allowance helps with brief contact interruptions.
+- While a click or scroll key is already held, repositioning can resume from an edge.
+
+In trackball mode, resting closer to the physical top or side edges increases inertia braking. At the boundary with the usable area, inertia has its normal strength. Deeper inside an excluded strip, a glide decelerates faster and travels a shorter distance. A contact at the outermost edge stops the glide. This uses contact position, including palm-classified contacts, and applies to movement after lifting the operating finger.
+
+## Settings
+
+Right-click the tray icon and select **Edit settings** to open the built-in JSON editor. **Save and close** validates, saves, and applies your changes. **Cancel** discards the edit.
+
+| Setting | What it controls |
 | --- | --- |
-| タッチパッドに触れながら F / J | 左クリック |
-| タッチパッドに触れながら D / K | 右クリック |
-| タッチパッドに触れながら C / M | センタークリック（中ボタン） |
-| タッチパッドに触れながら S / L を保持して上下に動かす | 上下スクロール |
-| タッチパッドに触れながら Shift + S / Shift + L を保持して左右に動かす | 左右スクロール（既定は右へ動かすと左スクロール） |
-| キーを押し続けて指を動かす | ドラッグ |
-| Ctrl / Alt / Win を伴うキー | 通常のショートカットとして通す |
-| Ctrl + Alt + F12 | 一時停止 / 再開 |
-| トレイアイコンを右クリック | 設定・自動起動・更新確認・終了 |
-| トレイアイコンをダブルクリック | 診断画面 |
+| `key_mode` | `"cvb"` or `"sdf"`. Default `"cvb"`. |
+| `pointer_mode` | `"mouse"` or `"trackball"`. Default `"mouse"`. |
+| `trackball_pointer_speed` | Pointer sensitivity, 0.25–4.0. Default 1.25. |
+| `pointer_inertia_min_travel_px` | Minimum confirmed movement before pointer inertia can start, 0–1000 pixels. Default 12. |
+| `pointer_inertia_strength` | Pointer inertia strength, 0–2. Default 1. Set 0 to disable it. |
+| `pointer_inertia_decay` | Pointer deceleration, 1–20. Larger values stop sooner. Default 5. |
+| `pointer_stop_hold_enabled` / `pointer_stop_hold_ms` | Enable the stop-touch hold and set its duration, 0–2000 ms. |
+| `inertia_enabled` / `inertia_decay` | Scroll inertia and its deceleration, 1–20. |
+| `edge_side_percent` / `edge_top_percent` | Excluded side and top widths. Ranges 0–45% and 0–80%. |
+| `edge_grace_ms` | Reconnect allowance, 0–5000 ms. Default 500. |
+| `edge_pointer_guard` | Enable pointer movement suppression for excluded contacts. |
+| `drag_pixels_per_pad_width` / `drag_pixels_per_pad_height` | Keyboard-assisted drag sensitivity over the pad's full width and height. |
+| `scroll_units_per_pad_width` / `scroll_units_per_pad_height` | Horizontal and vertical scroll sensitivity. 120 wheel units equal one notch. |
+| `scroll_invert` / `scroll_horizontal_invert` | Vertical and horizontal scroll direction. |
 
-ウィンドウを閉じても常駐します。完全終了は Exit を選択します。
-キーを押した時点で文字かクリックかを決め、指の離脱やキーリピートで途中から切り替えません。
-F と J を同時に押しても、両方を離すまで左ボタンを保持します。
-F/J/D/K/C/M/S/L を保持したまま指を離して置き直せます。保持中は500msの期限を設けず、端からも再開できます。
-置き直した最初の位置は基準点として扱い、離す前の位置との差でカーソルやスクロールを飛ばしません。
-S を離すと指の移動による直接のスクロールを終了します。キーを先に押したまま接触しても、文字から操作へ途中では切り替えません。
-上下・左右とも既定で反転方向です。S保持中にShiftを押すと左右、離すと上下に切り替わります。
-G は通常の文字入力です。
-トレイの `Invert vertical scroll` / `Invert horizontal scroll` で方向を個別に変更できます。即時反映して保存され、再起動は不要です。
-Excelでは通常の左右ホイールの代わりに、Ctrl+Shift相当のホイールメッセージをExcelへ送ります。
-物理的なCtrl/Shiftキーの状態を書き換えず、他アプリの操作に影響させません。Excelでは1ノッチ単位にまとめます。
-Chromeなどでは通常の左右ホイールを使います。Excelの版・画面による動作は実機で確認してください。
+Settings are stored in `%LOCALAPPDATA%\Thumbpad\settings.json`.
 
-### 慣性スクロール
+## Updates and tray controls
 
-S または Shift+S を押して指を弾き、パッドから指を離すと、直前の速さに応じて減速しながらスクロールが続きます。
-指を離した後はSを離しても慣性を維持します。パッドへ指を置けば停止します。端の除外領域やクリックに採用されなかった接触でも停止します。
-静止してから指を離した場合は慣性を開始しません。一時停止・終了・画面ロック・スリープ等でも停止します。
-トレイの `Inertial scrolling` で有効・無効を切り替えられます。
-慣性が動いている間だけ16msのタイマーを使用し、停止したら解除します。長い処理停止後にまとめてスクロールを送ることは避けます。
+Use **Check for updates** to check manually. **Automatic updates** enables checks after startup and once a day. Thumbpad asks before downloading and installing a newer release.
 
-### ポインターのモード
+Double-click the tray icon to open diagnostics. Closing the diagnostics window keeps Thumbpad running. Choose **Exit** from the tray menu to quit.
 
-既定は通常のマウスモードです。トレイの `Trackball pointer mode (off = mouse)` をオンにすると、ポインターもトラックボール方式になります。
-指の移動でカーソルを動かし、指を離すと減速しながら継続します。パッドへ再接触すると慣性が止まります。
-慣性を止めた接触では、その時点から既定で100msポインターを固定します。その後は指を置いたまま移動を再開できます。
-固定中の指の移動は破棄し、解除後にまとめて移動させません。慣性が動いていないときの通常接触には適用しません。
-オフに戻すと通常のマウスモードへ即時復帰し、選択は保存されます。通常の端の開始除外も維持します。
-スクロール用のS/Lを押している間はスクロールが優先され、ポインターは動きません。
-ポインターの減速は `pointer_inertia_decay`、直接移動量は既存の `drag_pixels_per_pad_width` / `drag_pixels_per_pad_height` で調整します。
-ポインターの慣性はUIとは別の専用スレッドで、高精度タイマーの2ms間隔を目標に更新します。
-小数の位置を保持し、最後の出力時だけ画素へ丸めます。小さな軸の速度も捨てず、斜めの方向を保ちます。
-トラックボール方式の直接移動・慣性移動は物理画素の絶対座標で送り、Windowsの相対マウス加速を重ねません。
-通常マウスモードは従来の方式です。複数画面や拡大率のある環境では、ポインター専用スレッドをDPI対応にしています。
-高精度タイマーは慣性中だけ動かし、非接触の待機中はスレッドも待機します。再接触時は古い世代の移動を破棄します。
-タッチパッドの「タップでクリック」を併用すると意図しない二重操作になる場合があります。
+## Compatibility and troubleshooting
 
-キーを保持している間のドラッグ・スクロールは、HIDの移動量から入力を生成します。
-これによりWindows側のキー入力中のタッチパッド移動抑制に依存しません。OSの感度設定は変更しません。
-ドラッグの速度は通常のPrecision Touchpad移動と異なる場合があり、下記の設定で調整できます。
+- A built-in Windows Precision Touchpad that exposes contact reports is required. Older vendor-specific or PS/2-only touchpads are unsupported.
+- In diagnostics, **HID reports** should increase when you move a finger. If they do not, that device or session is not currently supported.
+- Edge protection and keyboard-assisted pointer control can also suppress an external mouse moved at the same time.
+- Elevated applications, secure desktops, and some games can restrict generated mouse input.
+- Touchpad tap-to-click can produce additional clicks alongside keyboard clicks.
+- If input feels stuck, pause with Ctrl+Alt+F12 or exit and restart Thumbpad.
 
-## 端からの誤操作防止
+End-to-end input latency and compatibility across laptop models have not been comprehensively measured.
 
-初期値では左右各 12%、上 15% を操作開始の除外領域にします。下端は除外しません。
+## Privacy and support
 
-- 中央側から開始した接触は、端へ移動しても有効なままです。
-- 除外領域から開始した接触は、指を離すまで無効です。中央へ滑らせても有効化しません。
-- 有効な接触の移動から 500ms 以内は、端での再接触も有効です。瞬断や持ち替えへの猶予です。
-- 無効な接触の移動やセンサーの小さな揺れだけでは、猶予を延長しません。
-- 有効な接触がなく、無効な端の接触だけがある間は、物理的なカーソル移動も抑制します。
-- すでに有効なクリック・スクロール用キーを保持中なら、再接触時の端判定を免除します。
+Thumbpad checks GitHub for releases. It does not record or transmit typed text or send usage analytics. Local diagnostics contain counters and device information. Update errors and crash reports are saved locally in `%LOCALAPPDATA%\Thumbpad`.
 
-**カーソル抑制は接触状態との対応付けによる実験機能です。** 低レベルマウスフックは
-発生元のデバイスハンドルを提供しないため、無効な接触中やキー操作中に外付けマウスも同時に動かすと、
-その移動も止まることがあります。HID レポートとマウスイベントの順序次第で、開始時の移動が
-一部通る可能性もあります。注入された入力・リモート操作は抑制対象外です。
-ドライバーによるデバイス別の完全な遮断ではありません。
-`edge_pointer_guard` を `false` にすると、キー変換の端判定だけを残せます。
-タップや物理ボタン、スクロール・ズームを遮断する機能ではありません。
+Report problems through [GitHub Issues](https://github.com/kathoc/thumbpad/issues), including your laptop model, Windows version, Thumbpad version, and the steps to reproduce.
 
-マウスフックは専用スレッドで処理し、診断画面・設定処理の待ち時間から切り離しています。
-タッチパッドに接触がない間と一時停止中はフック自体を解除します。
-診断の `Mouse hook: DETACHED` はマウス入力をフックしていない状態です。
+## Development
 
-## 設定
-
-トレイまたは診断画面の Settings から内蔵のJSON設定画面を開けます。
-`Save and close` で検証・保存して即時反映し、`Cancel` で変更を破棄します。設定ファイルは `%LOCALAPPDATA%\Thumbpad\settings.json` です。
-
-```json
-{
-  "auto_update": true,
-  "edge_side_percent": 12.0,
-  "edge_top_percent": 15.0,
-  "edge_grace_ms": 500,
-  "edge_pointer_guard": true,
-  "drag_pixels_per_pad_width": 1600.0,
-  "drag_pixels_per_pad_height": 1000.0,
-  "scroll_units_per_pad_height": 2400.0,
-  "scroll_invert": true,
-  "scroll_units_per_pad_width": 2400.0,
-  "scroll_horizontal_invert": true,
-  "inertia_enabled": true,
-  "inertia_decay": 5.0,
-  "pointer_mode": "mouse",
-  "pointer_inertia_decay": 5.0,
-  "pointer_inertia_min_travel_px": 12.0,
-  "pointer_inertia_strength": 1.0,
-  "pointer_stop_hold_ms": 100,
-  "pointer_stop_hold_enabled": true,
-  "trackball_pointer_speed": 1.25
-}
-```
-
-左右幅は 0–45%、上端幅は 0–80%、猶予は 0–5000ms。
-不正な設定は上書きせず通知し、そのセッションでは既定値を使用します。
-ドラッグの幅・高さはパッド全体を動かした際の相対移動量、スクロール量は全高に対するホイール単位です（120で1ノッチ）。
-移動・スクロール量は1–20000。`scroll_invert` で上下、`scroll_horizontal_invert` で左右を反転できます。
-左右スクロール量は `scroll_units_per_pad_width` で調整します。
-`inertia_decay` は1–20で、小さいほど慣性が長く、大きいほど早く減速します。慣性は最大3秒で終了します。
-`pointer_stop_hold_ms` は停止接触後にポインターを固定する時間で、0–2000ms。トレイメニューの `Hold pointer after inertia stop` で固定をオン／オフできます。時間の設定値はオフにしても保持します。
-既存の設定値は保持し、新しい項目の既定値だけをアップグレード時に追加します。
-現段階の割り当ては F/J/D/K/C/M/S/L と Shift+S / Shift+L 固定です。
-
-## 更新
-
-起動 15 秒後と 24 時間ごとに GitHub Releases の最新の正式版を確認します。
-確認はトレイから無効化でき、手動の Check updates も利用できます。
-新しいバージョンがあると確認画面を出し、承認後にインストーラーをダウンロードして
-置き換え・再起動します。プレリリースとダウングレードは自動更新の対象外です。
-GitHub API から取得した SHA-256 digest とファイルサイズを照合し、欠落や不一致なら実行しません。
-GitHub アカウント・リポジトリと HTTPS を信頼する方式であり、独立した署名鍵による検証ではありません。
-GitHub の API 制限やネットワーク障害時は入力処理を継続します。
-失敗の詳細は `%LOCALAPPDATA%\Thumbpad\update-error.txt` に保存します。
-更新用ファイルは同じフォルダー内の `updates` に残ります。
-
-外部通信は公開 GitHub API とリリースファイル取得のみです。キー入力内容の記録・送信、
-利用統計の送信はありません。診断はカウンターとデバイス情報を表示します。
-Rust のパニックが発生した場合は、原因とスタック情報を同フォルダーの `crash.txt` に保存します。自動送信はしません。
-
-## 対応範囲と制約
-
-- Digitizers / Touch Pad (usage page `0x0D`, usage `0x05`) を Raw Input で公開する機種が対象です。
-- HID descriptor の Tip Switch、Contact ID、X/Y、Contact Count を解析します。Confidence があれば掌判定を尊重します。
-- 固定のバイト配列形式やメーカー名では分岐しません。並列・シリアル・ハイブリッド報告をフレーム単位で処理します。
-- 旧式の Synaptics / ELAN 独自 API、PS/2 マウス互換のタッチパッドは未対応です。
-- 指を動かしても診断画面の Decoded devices が 0、または HID reports が増えない機種・セッションでは動作しません。
-- 管理者権限のアプリ、UAC のセキュアデスクトップ、一部ゲーム等への入力注入は保証しません。
-- スリープ・セッション変更・デバイス変更・一時停止・正常終了時は保持ボタンを解除します。
-- 強制終了や OS によるフック解除後の完全な復旧は保証しません。一時停止または再起動してください。
-- Max hook processing はアプリ内の処理時間であり、指やキーから画面表示までの遅延ではありません。
-
-## 開発
-
-Rust 1.96.0、Visual Studio C++ Build Tools、Windows SDK、Inno Setup 6.3 以降が必要です。
-Windows x64 の C ランタイムは静的リンクし、別途 Visual C++ ランタイムの導入を不要にします。
-
-```powershell
-cargo test --locked
-cargo clippy --locked --all-targets -- -D warnings
-cargo run
-./installer/build.ps1
-# コンパイラーの場所を指定する場合:
-./installer/build.ps1 -Iscc 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
-```
-
-`dist` にインストーラー、単体 EXE、SHA256SUMS.txt ができます。
-既存プロセスを正常終了させるには `thumbpad.exe --quit` を使用します。
-
-## リリース手順
-
-Cargo.toml の version と RELEASE_NOTES.md を更新してテストし、`v<version>` タグを push します。
-GitHub Actions がテスト・ビルド・インストーラー作成を行い、全ファイルをドラフトにアップロード後に公開します。
-`v0.1.0` と `-beta` 等を含むタグはプレリリースになります。
-リポジトリを fork する場合は `src/update.rs` の `REPOSITORY` とインストーラー内の URL を変更してください。
-
-## 実機テスト
-
-[TESTING.md](TESTING.md) の手順に従って機種ごとの確認を行ってください。
-通常のマウス注入ではタッチパッドの物理接触を再現できないため、実際に指を置いての確認が必要です。
-
-## 参考
-
-- [ThumbSense 原論文](https://www2.sonycsl.co.jp/person/rekimoto/papers/chi03tsense.pdf)
-- [Microsoft: Precision Touchpad collection](https://learn.microsoft.com/en-us/windows-hardware/design/component-guidelines/touchpad-windows-precision-touchpad-collection)
-- [Microsoft: LowLevelMouseProc](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelmouseproc)
-- [Microsoft: SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput)
-- [Microsoft: Excelのスクロール方法](https://support.microsoft.com/en-us/excel/move-or-scroll-through-a-worksheet)
-
-MIT License
-
-短い操作では慣性を抑えます。トラックボールの慣性は、連続した動きが `pointer_inertia_min_travel_px`（0–1000px、既定12px）を超えると始まり、そこから108px増えるまで滑らかに強くなります。`pointer_inertia_strength` は慣性の強さ（0–2、既定1、0で無効）です。スクロールは18ホイール単位以下で慣性なし、180単位以上で従来の強さになり、その間は滑らかに増加します。指を離す直前の速度も反映します。
-
-`trackball_pointer_speed` はトラックボールモードのポインター感度（0.25–4.0、既定1.25倍）です。トレイの `Trackball pointer faster / slower` から0.1倍ずつ即時変更でき、保存されます。通常マウスモードとスクロール感度は変わりません。有効な指が2本以上になる操作では、有効な指をすべて離すまでトラックボールのポインター移動と慣性を抑え、Windowsの2本指スクロールを通します。禁止エリアから接触した指があっても、別の有効エリアから接触した指でポインターを動かせます。クリックキーを押したドラッグは継続できます。
+Build requirements are Rust 1.96.0, Visual Studio C++ Build Tools, Windows SDK, and Inno Setup 6.3 or newer. Run `cargo test --locked`, then `./installer/build.ps1` to produce the installer and portable executable in `dist`. The project uses the MIT license.

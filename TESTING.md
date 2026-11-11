@@ -1,5 +1,7 @@
 # 実機テスト
 
+For the legacy F/J/D/K/C/M/S/L checks below, select SDF mode first. New installations and upgrades without a saved key_mode use CVB mode.
+
 OS の版・ビルド、PC の型番、タッチパッドのドライバーバージョンを控えて実施します。
 自動テストは入力状態機械・端判定・複数パケットの組み立て・更新検証を確認します。
 実際の接触、Windows の palm rejection、イベント順序、体感遅延は別途実機確認が必要です。
@@ -65,3 +67,8 @@ OS の版・ビルド、PC の型番、タッチパッドのドライバーバ�
 49. Scroll natively with two fingers, including one finger at the edge; pointer must remain still. Lift one finger, then all fingers; the next single-finger motion must resume without jumping or momentum from the scroll gesture.
 
 50. Edit Settings opens the built-in editor with current settings. Cancel leaves settings unchanged; Save and close persists and immediately applies a valid edit. Invalid JSON, unknown fields and out-of-range values must show an error and keep both the editor and previous settings intact. Reopen to verify saved values.
+
+51. Verify CVB default, V/N left click, C/M right click, G/H middle click, B scroll and Shift+B horizontal scroll. Switch to SDF in the tray and back, and restart to check persistence.
+52. Switch layouts while a click key is held. The mouse button must release, the remaining key-up must be consumed, and a held typing key must not become a click on repeat.
+53. With one finger resting in an excluded strip, flick with another usable finger and lift only that finger. Move the resting contact from the boundary toward the physical edge; pointer inertia must travel less and stop sooner. Check top, left and right strips and retouch-to-stop.
+54. Check the English README, Japanese navigation link, Japanese guide and English-only release descriptions.

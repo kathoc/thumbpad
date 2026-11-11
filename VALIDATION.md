@@ -120,3 +120,7 @@ filter driver. No independent Authenticode or update-signing key is configured.
 ## v0.1.9
 
 47 tests passed, one timing probe ignored; fmt and clippy passed. Reproduced the Notepad path error with the installed app and also through the Notepad Open dialog. Replaced external editor launching with a native JSON editor. On the installed final build, verified current settings display, rejection of trackball_pointer_speed=0 without changing the saved file, successful save and editor close, and preservation of trackball mode, gain 1.25 and stop hold 100ms. Tests cover invalid JSON, unknown fields, out-of-range values and valid custom settings. The precise cause of Notepad path resolution was not established; the built-in editor removes that dependency.
+
+## v0.1.12
+
+54 automated tests passed, one native timer probe ignored. Regression coverage includes CVB/SDF mappings, CVB default and saved SDF loading, physical key ownership across layout changes, exclusion-depth braking at all three edges, physical contacts classified as palms, lift of an operating finger while an excluded contact remains, and reduced glide distance and duration. Formatting and clippy passed. The development PC does not expose contact width/height; braking uses position as requested. Physical game compatibility and the new edge-braking feel require user testing. All 12 prior release bodies and titles were verified to contain English text after translation.

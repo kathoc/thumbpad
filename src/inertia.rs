@@ -183,6 +183,13 @@ impl PointerInertia {
         let y = self.y.release_with_threshold(now, 0.0);
         x || y
     }
+    pub fn tick_braked(&mut self, now: Instant, decay: f64, gain: f64) -> Option<(f64, f64)> {
+        if gain <= 0.0 {
+            self.stop();
+            return None;
+        }
+        self.tick_precise(now, decay / gain)
+    }
     pub fn tick_precise(&mut self, now: Instant, decay: f64) -> Option<(f64, f64)> {
         let dx = self.x.distance(now, decay, 0.0).unwrap_or(0.0);
         let dy = self.y.distance(now, decay, 0.0).unwrap_or(0.0);
@@ -246,6 +253,35 @@ mod tests {
         assert!(pointer.release(t, 12.0, 1.0));
         assert!((pointer.y.velocity / pointer.x.velocity - 0.5).abs() < 1e-10);
         assert!(pointer.x.velocity < 2000.0);
+    }
+    #[test]
+    fn edge_braking_reduces_glide_distance_and_duration_without_new_motion() {
+        let t = Instant::now();
+        let coast = |gain| {
+            let mut pointer = PointerInertia::default();
+            for i in 0..6 {
+                pointer.record(24.0, 0.0, t + Duration::from_millis(i * 8));
+            }
+            assert!(pointer.release(t + Duration::from_millis(40), 12.0, 1.0));
+            let mut distance = 0.0;
+            for tick in 1..=1600 {
+                if let Some((x, y)) =
+                    pointer.tick_braked(t + Duration::from_millis(40 + tick * 2), 5.0, gain)
+                {
+                    distance += x;
+                    assert_eq!(y, 0.0);
+                }
+                if !pointer.active() {
+                    return (distance, tick);
+                }
+            }
+            panic!("inertia did not stop");
+        };
+        let normal = coast(1.0);
+        let braked = coast(0.5);
+        assert!(braked.0 > 0.0 && braked.0 < normal.0 * 0.6);
+        assert!(braked.1 < normal.1);
+        assert_eq!(coast(0.0).0, 0.0);
     }
     #[test]
     fn isolated_lift_motion_cannot_restart_or_accelerate_inertia() {

@@ -25,7 +25,7 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 config.save().map_err(|e| e.to_string())?;
                 APP.with_borrow_mut(|app| {
                     if let Some(a) = app {
-                        a.release(true);
+                        a.release(false);
                         a.devices = touchpad::Devices::new(
                             config.edge_side_percent,
                             config.edge_top_percent,

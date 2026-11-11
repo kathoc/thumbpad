@@ -26,6 +26,8 @@ struct Gate {
     grace: std::time::Duration,
     continuing: bool,
     physical: bool,
+    physical_positions: HashMap<u32, Point>,
+    contact_generation: u64,
     multitouch_gesture: bool,
 }
 impl Gate {
@@ -39,6 +41,8 @@ impl Gate {
             grace: std::time::Duration::from_millis(ms),
             continuing: false,
             physical: false,
+            physical_positions: HashMap::new(),
+            contact_generation: 0,
         }
     }
     fn sample(&mut self, id: u32, point: Point, down: bool, now: Instant) {
@@ -70,6 +74,24 @@ impl Gate {
                 },
             );
         }
+    }
+    fn inertia_gain(&self) -> Option<f64> {
+        self.physical_positions
+            .values()
+            .map(|point| {
+                let side = if self.side > 0.0 {
+                    (point.x.min(1.0 - point.x) / self.side).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                let top = if self.top > 0.0 {
+                    (point.y / self.top).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                side.min(top)
+            })
+            .reduce(f64::min)
     }
     fn pointer_contacts(&self) -> impl Iterator<Item = (&u32, &Contact)> {
         let interior = self.contacts.values().any(|c| c.accepted && !c.edge_start);
@@ -122,6 +144,7 @@ struct Frame {
     expected: usize,
     samples: Vec<Sample>,
     physical: bool,
+    physical_positions: HashMap<u32, Point>,
 }
 impl Frame {
     fn start(&mut self, count: usize) {
@@ -129,6 +152,7 @@ impl Frame {
             self.expected = count;
             self.samples.clear();
             self.physical = false;
+            self.physical_positions.clear();
         }
     }
     fn remaining(&self) -> usize {
@@ -140,6 +164,13 @@ impl Frame {
         }
         // Only a complete frame may remove contacts, including serial/hybrid reports.
         gate.physical = self.physical;
+        let new_contacts = self
+            .physical_positions
+            .keys()
+            .filter(|id| !gate.physical_positions.contains_key(id))
+            .count() as u64;
+        gate.contact_generation = gate.contact_generation.wrapping_add(new_contacts);
+        gate.physical_positions = std::mem::take(&mut self.physical_positions);
         let live: HashSet<_> = self
             .samples
             .iter()
@@ -371,7 +402,7 @@ impl Device {
             }
             let mut x = 0;
             let mut y = 0;
-            if down
+            if physical
                 && (HidP_GetUsageValue(HidP_Input, 1, Some(finger.link), 0x30, &mut x, pp, report)
                     != HIDP_STATUS_SUCCESS
                     || HidP_GetUsageValue(
@@ -394,14 +425,14 @@ impl Device {
                     / (cap.LogicalMax as f64 - cap.LogicalMin as f64))
                     .clamp(0.0, 1.0)
             };
-            self.frame.samples.push(Sample {
-                id,
-                point: Point {
-                    x: norm(x, &finger.x),
-                    y: norm(y, &finger.y),
-                },
-                down,
-            });
+            let point = Point {
+                x: norm(x, &finger.x),
+                y: norm(y, &finger.y),
+            };
+            if physical {
+                self.frame.physical_positions.insert(id, point);
+            }
+            self.frame.samples.push(Sample { id, point, down });
         }
         if slots > 0 && self.frame.samples.is_empty() {
             self.errors += 1;
@@ -467,6 +498,24 @@ impl Devices {
             .values()
             .flatten()
             .any(|d| !d.gate.contacts.is_empty())
+    }
+    pub fn pointer_contact_active(&self, mode: Mode) -> bool {
+        self.devices
+            .values()
+            .flatten()
+            .any(|d| d.gate.pointer_point(mode).is_some())
+    }
+    pub fn contact_generation(&self) -> u64 {
+        self.devices.values().flatten().fold(0u64, |total, d| {
+            total.wrapping_add(d.gate.contact_generation)
+        })
+    }
+    pub fn edge_inertia_gain(&self) -> Option<f64> {
+        self.devices
+            .values()
+            .flatten()
+            .filter_map(|d| d.gate.inertia_gain())
+            .reduce(f64::min)
     }
     pub fn pointer_gesture_blocked(&self) -> bool {
         self.devices
@@ -686,6 +735,82 @@ mod tests {
         frame.commit(&mut g, t);
         assert!(!g.touching());
         assert!(g.contacts.is_empty());
+    }
+    #[test]
+    fn edge_brake_tracks_depth_and_keeps_existing_contact_distinct_from_retouch() {
+        let t = Instant::now();
+        let mut gate = Gate::new(12.0, 15.0, 500);
+        let mut frame = Frame::default();
+        frame.start(2);
+        frame.physical = true;
+        frame.physical_positions.insert(0, p(0.06, 0.5));
+        frame.physical_positions.insert(1, p(0.5, 0.5));
+        frame.samples = vec![
+            Sample {
+                id: 0,
+                point: p(0.06, 0.5),
+                down: true,
+            },
+            Sample {
+                id: 1,
+                point: p(0.5, 0.5),
+                down: true,
+            },
+        ];
+        assert!(frame.commit(&mut gate, t));
+        assert_eq!(gate.contact_generation, 2);
+        assert_eq!(gate.inertia_gain(), Some(0.5));
+        assert!(gate.pointer_point(Mode::Pointer).is_some());
+        // The moving finger lifts while the edge finger stays down.
+        frame.start(1);
+        frame.physical = true;
+        frame.physical_positions.insert(0, p(0.03, 0.5));
+        frame.samples = vec![Sample {
+            id: 0,
+            point: p(0.03, 0.5),
+            down: true,
+        }];
+        assert!(frame.commit(&mut gate, t));
+        assert_eq!(gate.contact_generation, 2);
+        assert!(gate.physical);
+        assert_eq!(gate.pointer_point(Mode::Pointer), None);
+        assert_eq!(gate.inertia_gain(), Some(0.25));
+        // A palm-classified physical contact still contributes to the brake.
+        frame.start(1);
+        frame.physical = true;
+        frame.physical_positions.insert(0, p(0.12, 0.5));
+        frame.samples = vec![Sample {
+            id: 0,
+            point: p(0.12, 0.5),
+            down: false,
+        }];
+        assert!(frame.commit(&mut gate, t));
+        assert_eq!(gate.inertia_gain(), Some(1.0));
+        assert_eq!(gate.contact_generation, 2);
+        for (point, expected) in [
+            (p(0.0, 0.5), 0.0),
+            (p(1.0, 0.5), 0.0),
+            (p(0.5, 0.0), 0.0),
+            (p(0.94, 0.5), 0.5),
+            (p(0.5, 0.075), 0.5),
+            (p(0.5, 0.9), 1.0),
+        ] {
+            gate.physical_positions.insert(0, point);
+            assert!((gate.inertia_gain().unwrap() - expected).abs() < 1e-10);
+        }
+        frame.start(0);
+        assert!(frame.commit(&mut gate, t));
+        assert_eq!(gate.inertia_gain(), None);
+        frame.start(1);
+        frame.physical = true;
+        frame.physical_positions.insert(0, p(0.5, 0.5));
+        frame.samples = vec![Sample {
+            id: 0,
+            point: p(0.5, 0.5),
+            down: true,
+        }];
+        assert!(frame.commit(&mut gate, t));
+        assert_eq!(gate.contact_generation, 3);
     }
     #[test]
     fn excluded_fingers_do_not_block_a_separate_usable_finger() {

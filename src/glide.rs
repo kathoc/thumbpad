@@ -32,8 +32,13 @@ pub struct Client {
     active: Arc<AtomicBool>,
     ticks: Arc<AtomicU64>,
     max_gap_us: Arc<AtomicU64>,
+    brake_gain: Arc<AtomicU64>,
 }
 impl Client {
+    pub fn set_brake_gain(&self, gain: f64) {
+        self.brake_gain
+            .store(gain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
     pub fn active(&self) -> bool {
         self.active.load(Ordering::Acquire)
     }
@@ -149,6 +154,7 @@ pub fn spawn() -> Result<(Client, JoinHandle<()>)> {
         active: Arc::new(AtomicBool::new(false)),
         ticks: Arc::new(AtomicU64::new(0)),
         max_gap_us: Arc::new(AtomicU64::new(0)),
+        brake_gain: Arc::new(AtomicU64::new(1.0f64.to_bits())),
     };
     let shared = client.clone();
     let worker = std::thread::spawn(move || unsafe {
@@ -241,6 +247,7 @@ pub fn spawn() -> Result<(Client, JoinHandle<()>)> {
                 let _ = CancelWaitableTimer(timer);
                 continue;
             }
+            let gain = f64::from_bits(shared.brake_gain.load(Ordering::Relaxed));
             let now = Instant::now();
             shared.ticks.fetch_add(1, Ordering::Relaxed);
             shared.max_gap_us.fetch_max(
@@ -248,7 +255,7 @@ pub fn spawn() -> Result<(Client, JoinHandle<()>)> {
                 Ordering::Relaxed,
             );
             current.last = now;
-            if let Some((dx, dy)) = current.motion.tick_precise(now, current.decay) {
+            if let Some((dx, dy)) = current.motion.tick_braked(now, current.decay, gain) {
                 let p = position.unwrap_or_else(|| cursor());
                 let p = desktop.clamp(p.0 + dx, p.1 + dy);
                 position = Some(p);

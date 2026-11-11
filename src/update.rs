@@ -24,10 +24,32 @@ pub enum PointerMode {
     Mouse,
     Trackball,
 }
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyMode {
+    #[default]
+    Cvb,
+    Sdf,
+}
+impl KeyMode {
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Cvb => "CVB mode: V/N = left, C/M = right, G/H = middle, B = scroll.",
+            Self::Sdf => "SDF mode: F/J = left, D/K = right, C/M = middle, S/L = scroll.",
+        }
+    }
+    pub fn horizontal_description(self) -> &'static str {
+        match self {
+            Self::Cvb => "Shift+B = horizontal scroll.",
+            Self::Sdf => "Shift+S or Shift+L = horizontal scroll.",
+        }
+    }
+}
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub auto_update: bool,
+    pub key_mode: KeyMode,
     pub edge_side_percent: f64,
     pub edge_top_percent: f64,
     pub edge_grace_ms: u64,
@@ -52,6 +74,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             auto_update: true,
+            key_mode: KeyMode::Cvb,
             edge_side_percent: 12.0,
             edge_top_percent: 15.0,
             edge_grace_ms: 500,
@@ -160,6 +183,7 @@ impl Config {
                     .is_some_and(|value| {
                         [
                             "edge_pointer_guard",
+                            "key_mode",
                             "drag_pixels_per_pad_width",
                             "drag_pixels_per_pad_height",
                             "scroll_units_per_pad_height",
