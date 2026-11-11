@@ -607,7 +607,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                                     _ => None,
                                 })
                                 .sum();
-                            a.inertia.record(axis, delta, now);
+                            a.inertia.record_scroll(axis, delta, now);
                         }
                     } else if was_physical && a.enabled {
                         let scroll = a.config.inertia_enabled && a.inertia.release(now);

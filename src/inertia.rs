@@ -16,6 +16,7 @@ pub struct Inertia {
     tick_at: Option<Instant>,
     started_at: Option<Instant>,
     remainder: f64,
+    pending_scroll: Option<(Mode, f64, Instant)>,
 }
 impl Inertia {
     pub fn active(&self) -> bool {
@@ -68,7 +69,34 @@ impl Inertia {
             self.velocity + alpha * (instantaneous - self.velocity)
         };
     }
+    pub fn record_scroll(&mut self, axis: Option<Mode>, delta: f64, now: Instant) {
+        let Some(axis) = axis else {
+            self.stop();
+            return;
+        };
+        if delta.abs() < 2.0 {
+            self.stop();
+            return;
+        }
+        if let Some((previous_axis, previous_delta, at)) = self.pending_scroll
+            && previous_axis == axis
+            && previous_delta * delta > 0.0
+            && now.saturating_duration_since(at) <= Duration::from_millis(35)
+        {
+            self.record(Some(axis), previous_delta, at);
+        } else {
+            self.stop();
+        }
+        self.pending_scroll = Some((axis, delta, now));
+    }
     pub fn release(&mut self, now: Instant) -> bool {
+        if self
+            .pending_scroll
+            .is_some_and(|(_, _, at)| now.saturating_duration_since(at) > Duration::from_millis(35))
+        {
+            self.stop();
+            return false;
+        }
         self.velocity *= travel_gain(self.travel, 18.0, 180.0);
         self.release_with_threshold(now, 120.0)
     }
@@ -209,6 +237,30 @@ impl PointerInertia {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stationary_scroll_then_lift_jitter_cannot_start_momentum() {
+        let t = Instant::now();
+        for axis in [Mode::Scroll, Mode::HorizontalScroll] {
+            let make = || {
+                let mut inertia = Inertia::default();
+                for i in 0..8 {
+                    inertia.record_scroll(Some(axis), 30.0, t + Duration::from_millis(i * 8));
+                }
+                inertia
+            };
+            let mut stopped = make();
+            stopped.record_scroll(Some(axis), 0.0, t + Duration::from_millis(64));
+            stopped.record_scroll(Some(axis), 40.0, t + Duration::from_millis(72));
+            assert!(!stopped.release(t + Duration::from_millis(80)));
+            let mut normal = make();
+            let mut spike = make();
+            normal.record_scroll(Some(axis), 30.0, t + Duration::from_millis(64));
+            spike.record_scroll(Some(axis), 300.0, t + Duration::from_millis(64));
+            assert!(normal.release(t + Duration::from_millis(64)));
+            assert!(spike.release(t + Duration::from_millis(64)));
+            assert_eq!(normal.velocity, spike.velocity);
+        }
+    }
     #[test]
     fn small_gestures_do_not_coast_and_gain_is_bounded() {
         let t = Instant::now();
