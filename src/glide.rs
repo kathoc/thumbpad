@@ -112,7 +112,16 @@ unsafe fn deliver(remainder: &mut (f64, f64), dx: f64, dy: f64, foreground: HWND
         return true;
     }
     match relative_input(dx, dy, remainder) {
-        Some(input) => unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) == 1 },
+        Some(input) => unsafe {
+            let sent = SendInput(&[input], std::mem::size_of::<INPUT>() as i32) == 1;
+            if sent {
+                crate::LAST_POINTER_DELIVERY_MS.store(
+                    windows::Win32::System::SystemInformation::GetTickCount64(),
+                    Ordering::Relaxed,
+                );
+            }
+            sent
+        },
         None => true,
     }
 }

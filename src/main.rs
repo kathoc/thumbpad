@@ -65,6 +65,8 @@ static ERRORS: AtomicU64 = AtomicU64::new(0);
 static MAX_HOOK_US: AtomicU64 = AtomicU64::new(0);
 static BLOCKED_MOVES: AtomicU64 = AtomicU64::new(0);
 static INTERACTION: AtomicU64 = AtomicU64::new(0);
+static LAST_MOUSE_HOOK_MS: AtomicU64 = AtomicU64::new(0);
+static LAST_POINTER_DELIVERY_MS: AtomicU64 = AtomicU64::new(0);
 static LAST_CONTACT_MS: AtomicU64 = AtomicU64::new(0);
 static LAST_UI_MS: AtomicU64 = AtomicU64::new(0);
 static HAS_CONTACTS: AtomicBool = AtomicBool::new(false);
@@ -465,6 +467,9 @@ fn binding(vk: u32) -> Option<usize> {
 // movement only while rejected touchpad contacts are present; simultaneous
 // external-mouse movement can also be blocked. Injected input always passes.
 unsafe extern "system" fn mouse(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if code >= 0 {
+        LAST_MOUSE_HOOK_MS.store(GetTickCount64(), Ordering::Relaxed);
+    }
     if code >= 0 && wp.0 == WM_MOUSEMOVE as usize {
         let event = &*(lp.0 as *const MSLLHOOKSTRUCT);
         if event.flags & LLMHF_INJECTED == 0
@@ -510,6 +515,7 @@ fn start_mouse_thread() -> Result<(std::thread::JoinHandle<()>, u32)> {
                     ) {
                         Ok(installed) => {
                             hook = Some(installed);
+                            LAST_MOUSE_HOOK_MS.store(GetTickCount64(), Ordering::Relaxed);
                             MOUSE_READY.store(true, Ordering::Relaxed);
                         }
                         Err(_) => {
@@ -581,6 +587,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             reset_input_after_gap(hwnd);
         }
         if msg == WM_INPUT && !recovery::raw_fresh(now as u32, GetMessageTime() as u32) {
+            APP.with_borrow_mut(|app| {
+                if let Some(a) = app {
+                    a.stop_inertia();
+                    a.devices.reset_motion();
+                }
+            });
             return DefWindowProcW(hwnd, msg, wp, lp);
         }
     }
@@ -596,6 +608,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_INPUT => {
             let effects = APP.with_borrow_mut(|app| {
                 if let Some(a) = app {
+                    let last_contact = LAST_CONTACT_MS.load(Ordering::Relaxed);
+                    if last_contact != 0 && !recovery::contact_fresh(GetTickCount64(), last_contact)
+                    {
+                        // Claim this gap once; subsequent hybrid packets must
+                        // be allowed to complete the new frame assembly.
+                        LAST_CONTACT_MS.store(0, Ordering::Relaxed);
+                        a.stop_inertia();
+                        a.devices.reset_motion();
+                    }
                     let (key_mode, epoch) = interaction();
                     let trackball = a.config.pointer_mode == update::PointerMode::Trackball;
                     let mode = if key_mode == motion::Mode::Off && trackball {
@@ -709,6 +730,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     Vec::new()
                 }
             });
+            if effects
+                .iter()
+                .any(|e| matches!(e, motion::Effect::Move { .. }))
+                && recovery::hook_missing(
+                    GetTickCount64(),
+                    LAST_POINTER_DELIVERY_MS.load(Ordering::Relaxed),
+                    LAST_MOUSE_HOOK_MS.load(Ordering::Relaxed),
+                )
+                && MOUSE_READY.swap(false, Ordering::Relaxed)
+            {
+                let id = MOUSE_THREAD.load(Ordering::Relaxed);
+                if id != 0 {
+                    let _ = PostThreadMessageW(id, RESET_MOUSE, WPARAM(0), LPARAM(0));
+                }
+            }
             if MOUSE_READY.load(Ordering::Relaxed) {
                 for effect in effects {
                     inject_motion(effect);

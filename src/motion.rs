@@ -122,6 +122,17 @@ mod tests {
         assert_eq!(feed(0.510), None);
     }
     #[test]
+    fn discarded_input_rebases_without_replaying_the_missing_displacement() {
+        let mut m = Motion::default();
+        m.feed(Mode::Pointer, 0, Some((1, 0.1, 0.5)), t());
+        m = Motion::default(); // Recovery discards the old coordinate baseline.
+        assert_eq!(m.feed(Mode::Pointer, 0, Some((1, 0.9, 0.5)), t()), None);
+        assert_eq!(
+            m.feed(Mode::Pointer, 0, Some((1, 0.91, 0.5)), t()),
+            Some(Effect::Move { dx: 10, dy: 0 })
+        );
+    }
+    #[test]
     fn trackball_pointer_moves_without_a_click_key_and_rebases_on_lift() {
         let mut m = Motion::default();
         assert_eq!(m.feed(Mode::Pointer, 1, Some((1, 0.5, 0.5)), t()), None);

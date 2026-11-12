@@ -8,6 +8,13 @@ pub fn contact_fresh(now: u64, last: u64) -> bool {
     last != 0 && now >= last && now - last <= 750
 }
 
+pub fn hook_missing(now: u64, delivered: u64, callback: u64) -> bool {
+    delivered != 0
+        && now >= delivered
+        && now - delivered <= 100
+        && delivered.saturating_sub(callback) > 100
+}
+
 pub fn ui_gap(now: u64, last: u64) -> bool {
     last != 0 && now.saturating_sub(last) > 2000
 }
@@ -43,6 +50,14 @@ mod tests {
         assert!(pointer_fresh(Duration::from_millis(40)));
         assert!(!pointer_fresh(Duration::from_micros(40_001)));
         assert!(!pointer_fresh(Duration::from_secs(3600)));
+    }
+    #[test]
+    fn silent_hook_removal_requires_a_recent_delivery_without_a_callback() {
+        assert!(!hook_missing(1000, 0, 0));
+        assert!(!hook_missing(10_000, 1000, 1000)); // Stationary is not a failure.
+        assert!(!hook_missing(1010, 1000, 1000));
+        assert!(!hook_missing(1100, 1000, 950));
+        assert!(hook_missing(1100, 1000, 899));
     }
     #[test]
     fn heartbeat_only_recovers_after_a_real_gap() {

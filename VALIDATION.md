@@ -136,3 +136,7 @@ filter driver. No independent Authenticode or update-signing key is configured.
 ## v0.1.16
 
 62 tests passed and one native timer probe ignored; formatting and clippy passed. Added recovery deadline tests for missing/stale contacts, tick-count wrap, stale raw packets, UI gaps and expired pointer packets. A full bounded mailbox is tested without a receiver to prove move/stop calls do not block, and queued packets are invalidated by a cancellation generation even when Stop cannot enter the mailbox. Real sleep/resume symptoms were reported but not reproduced in an automated physical sleep cycle. The mitigation is not proof that the original cause has been isolated.
+
+## v0.1.17
+
+64 tests passed, one timing probe ignored. Added coverage for hook callback watchdog deadlines (including stationary input) and jump-free coordinate rebasing after discarded input. Silent hook removal and physical sleep/resume have not been reproduced on hardware.

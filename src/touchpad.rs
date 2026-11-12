@@ -478,6 +478,13 @@ impl Devices {
     pub fn clear(&mut self) {
         self.devices.clear();
     }
+    pub fn reset_motion(&mut self) {
+        for device in self.devices.values_mut().flatten() {
+            device.motion = Motion::default();
+            device.frame = Frame::default();
+        }
+    }
+
     pub fn touching(&self) -> bool {
         self.devices.values().flatten().any(|d| d.gate.touching())
     }

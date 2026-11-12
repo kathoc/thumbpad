@@ -1,5 +1,7 @@
-# Thumbpad v0.1.16
+# Thumbpad v0.1.17
 
+- Rebase pointer coordinates after discarded input or contact-report gaps, preventing catch-up jumps.
+- Rebuild a silently removed mouse hook when recent synthetic motion has no corresponding hook callback.
 - Reset touchpad state, pointer suppression and inertia on suspend/resume and long UI scheduling gaps.
 - Re-register touchpad input and rebuild the mouse hook after resume.
 - Let physical pointer movement pass when touchpad contact reports stop arriving.
