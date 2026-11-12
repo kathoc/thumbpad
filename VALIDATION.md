@@ -132,3 +132,7 @@ filter driver. No independent Authenticode or update-signing key is configured.
 ## v0.1.15
 
 57 automated tests passed, one native timer probe ignored; formatting and clippy passed. Removed the Ctrl/Alt bypass from click activation while retaining the Windows-key bypass. Regression coverage checks modifier-first and click-first ordering for left/right drag ownership, modifier pass-through, consumed click-key repeat and release after contact loss. Actual InDesign modified drag behavior still requires physical verification.
+
+## v0.1.16
+
+62 tests passed and one native timer probe ignored; formatting and clippy passed. Added recovery deadline tests for missing/stale contacts, tick-count wrap, stale raw packets, UI gaps and expired pointer packets. A full bounded mailbox is tested without a receiver to prove move/stop calls do not block, and queued packets are invalidated by a cancellation generation even when Stop cannot enter the mailbox. Real sleep/resume symptoms were reported but not reproduced in an automated physical sleep cycle. The mitigation is not proof that the original cause has been isolated.

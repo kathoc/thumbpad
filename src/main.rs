@@ -5,6 +5,7 @@ mod engine;
 mod glide;
 mod inertia;
 mod motion;
+mod recovery;
 mod settings;
 mod touchpad;
 mod update;
@@ -14,7 +15,7 @@ use std::{cell::RefCell, mem::size_of, time::Instant};
 use windows::{
     Win32::{
         Foundation::*,
-        System::{LibraryLoader::*, Threading::*},
+        System::{LibraryLoader::*, SystemInformation::GetTickCount64, Threading::*},
         UI::{
             Input::{KeyboardAndMouse::*, *},
             Shell::*,
@@ -64,6 +65,8 @@ static ERRORS: AtomicU64 = AtomicU64::new(0);
 static MAX_HOOK_US: AtomicU64 = AtomicU64::new(0);
 static BLOCKED_MOVES: AtomicU64 = AtomicU64::new(0);
 static INTERACTION: AtomicU64 = AtomicU64::new(0);
+static LAST_CONTACT_MS: AtomicU64 = AtomicU64::new(0);
+static LAST_UI_MS: AtomicU64 = AtomicU64::new(0);
 static HAS_CONTACTS: AtomicBool = AtomicBool::new(false);
 static SCROLL_EVENTS: AtomicU64 = AtomicU64::new(0);
 static MOUSE_THREAD: AtomicU32 = AtomicU32::new(0);
@@ -75,6 +78,7 @@ fn pointer_running() -> bool {
     GLIDE.get().is_some_and(glide::Client::active)
 }
 const RECONFIGURE_MOUSE: u32 = WM_APP + 10;
+const RESET_MOUSE: u32 = WM_APP + 11;
 fn publish_interaction(dragging: bool, scrolling: bool, shift: bool) {
     let flags =
         u64::from(dragging) | (u64::from(scrolling) << 1) | (u64::from(scrolling && shift) << 2);
@@ -257,6 +261,7 @@ impl App {
         let _ = KillTimer(Some(self.hwnd), INERTIA_TIMER);
     }
     unsafe fn release(&mut self, reset: bool) {
+        LAST_CONTACT_MS.store(0, Ordering::Relaxed);
         self.stop_hold.reset();
         self.stop_inertia();
         CLICK_ACTIVE.store(false, Ordering::Relaxed);
@@ -462,7 +467,9 @@ fn binding(vk: u32) -> Option<usize> {
 unsafe extern "system" fn mouse(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if code >= 0 && wp.0 == WM_MOUSEMOVE as usize {
         let event = &*(lp.0 as *const MSLLHOOKSTRUCT);
-        if event.flags & LLMHF_INJECTED == 0 {
+        if event.flags & LLMHF_INJECTED == 0
+            && recovery::contact_fresh(GetTickCount64(), LAST_CONTACT_MS.load(Ordering::Relaxed))
+        {
             let block = POINTER_BLOCK.load(Ordering::Relaxed)
                 || ((INTERACTION.load(Ordering::Relaxed) & 3 != 0
                     || TRACKBALL_MODE.load(Ordering::Relaxed))
@@ -487,7 +494,13 @@ fn start_mouse_thread() -> Result<(std::thread::JoinHandle<()>, u32)> {
         }
         let mut hook = None;
         while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
-            if msg.message == RECONFIGURE_MOUSE {
+            if msg.message == RECONFIGURE_MOUSE || msg.message == RESET_MOUSE {
+                if msg.message == RESET_MOUSE {
+                    MOUSE_READY.store(false, Ordering::Relaxed);
+                    if let Some(installed) = hook.take() {
+                        let _ = UnhookWindowsHookEx(installed);
+                    }
+                }
                 if HAS_CONTACTS.load(Ordering::Relaxed) && hook.is_none() {
                     match SetWindowsHookExW(
                         WH_MOUSE_LL,
@@ -534,7 +547,43 @@ unsafe fn tray(hwnd: HWND, add: bool) {
     data.szTip[..tip.len()].copy_from_slice(&tip);
     let _ = Shell_NotifyIconW(if add { NIM_ADD } else { NIM_DELETE }, &data);
 }
+unsafe fn reset_input_after_gap(hwnd: HWND) {
+    APP.with_borrow_mut(|app| {
+        if let Some(a) = app {
+            a.release(true);
+            a.devices.clear();
+        }
+    });
+    let id = MOUSE_THREAD.load(Ordering::Relaxed);
+    if id != 0 {
+        let _ = PostThreadMessageW(id, RESET_MOUSE, WPARAM(0), LPARAM(0));
+    }
+    if register_touchpad(hwnd).is_err() {
+        ERRORS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+unsafe fn register_touchpad(hwnd: HWND) -> Result<()> {
+    RegisterRawInputDevices(
+        &[RAWINPUTDEVICE {
+            usUsagePage: 0x0D,
+            usUsage: 0x05,
+            dwFlags: RIDEV_INPUTSINK | RIDEV_DEVNOTIFY,
+            hwndTarget: hwnd,
+        }],
+        size_of::<RAWINPUTDEVICE>() as u32,
+    )
+}
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if matches!(msg, WM_INPUT | WM_TIMER) {
+        let now = GetTickCount64();
+        let last = LAST_UI_MS.swap(now, Ordering::Relaxed);
+        if recovery::ui_gap(now, last) {
+            reset_input_after_gap(hwnd);
+        }
+        if msg == WM_INPUT && !recovery::raw_fresh(now as u32, GetMessageTime() as u32) {
+            return DefWindowProcW(hwnd, msg, wp, lp);
+        }
+    }
     match msg {
         WM_HOTKEY => {
             APP.with_borrow_mut(|app| {
@@ -566,6 +615,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         a.config.motion_tuning(),
                         a.enabled && a.config.edge_pointer_guard,
                     );
+                    if complete {
+                        LAST_CONTACT_MS.store(GetTickCount64(), Ordering::Relaxed);
+                    }
                     let now = Instant::now();
                     let new_contact = contact_generation != a.devices.contact_generation()
                         || (!was_physical && a.devices.physical_contacts());
@@ -671,13 +723,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 }
             });
         }
-        WM_POWERBROADCAST | 0x02B1 => {
-            APP.with_borrow_mut(|app| {
-                if let Some(a) = app {
-                    a.release(true);
-                    a.devices.clear();
-                }
-            });
+        WM_POWERBROADCAST if matches!(wp.0, 4 | 6 | 7 | 18) => {
+            LAST_UI_MS.store(GetTickCount64(), Ordering::Relaxed);
+            reset_input_after_gap(hwnd);
+            return LRESULT(1);
+        }
+        0x02B1 => {
+            reset_input_after_gap(hwnd);
         }
         WM_TIMER if wp.0 == INERTIA_TIMER => {
             let effect = APP.with_borrow_mut(|app| {
@@ -1022,15 +1074,7 @@ fn run() -> Result<()> {
             MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
             VK_F12.0 as u32,
         )?;
-        RegisterRawInputDevices(
-            &[RAWINPUTDEVICE {
-                usUsagePage: 0x0D,
-                usUsage: 0x05,
-                dwFlags: RIDEV_INPUTSINK | RIDEV_DEVNOTIFY,
-                hwndTarget: hwnd,
-            }],
-            size_of::<RAWINPUTDEVICE>() as u32,
-        )?;
+        register_touchpad(hwnd)?;
         let config = update::Config::load();
         APP.with_borrow_mut(|a| {
             *a = Some(App {
@@ -1192,6 +1236,7 @@ mod callback_tests {
     #[test]
     fn mouse_hook_can_interrupt_a_borrowed_ui_state() {
         let event = MSLLHOOKSTRUCT::default();
+        LAST_CONTACT_MS.store(unsafe { GetTickCount64() }, Ordering::Relaxed);
         POINTER_BLOCK.store(true, Ordering::Relaxed);
         let result = APP.with_borrow_mut(|_| unsafe {
             mouse(

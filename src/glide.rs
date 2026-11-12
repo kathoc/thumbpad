@@ -20,14 +20,14 @@ use windows::{
     core::*,
 };
 enum Command {
-    Move(u64, usize, i32, i32),
-    Start(u64, usize, Box<PointerInertia>, f64),
+    Move(u64, usize, Instant, i32, i32),
+    Start(u64, usize, Instant, Box<PointerInertia>, f64),
     Stop(u64),
     Shutdown,
 }
 #[derive(Clone)]
 pub struct Client {
-    tx: mpsc::Sender<Command>,
+    tx: mpsc::SyncSender<Command>,
     generation: Arc<AtomicU64>,
     active: Arc<AtomicBool>,
     ticks: Arc<AtomicU64>,
@@ -48,12 +48,13 @@ impl Client {
             .fetch_add(1, Ordering::AcqRel)
             .wrapping_add(1);
         self.active.store(false, Ordering::Release);
-        let _ = self.tx.send(Command::Stop(generation));
+        let _ = self.tx.try_send(Command::Stop(generation));
     }
     pub fn move_by(&self, dx: i32, dy: i32) {
-        let _ = self.tx.send(Command::Move(
+        let _ = self.tx.try_send(Command::Move(
             self.generation.load(Ordering::Acquire),
             unsafe { GetForegroundWindow().0 as usize },
+            Instant::now(),
             dx,
             dy,
         ));
@@ -64,9 +65,10 @@ impl Client {
         self.max_gap_us.store(0, Ordering::Relaxed);
         if self
             .tx
-            .send(Command::Start(
+            .try_send(Command::Start(
                 self.generation.load(Ordering::Acquire),
                 unsafe { GetForegroundWindow().0 as usize },
+                Instant::now(),
                 Box::new(motion),
                 decay,
             ))
@@ -121,7 +123,7 @@ struct Run {
     last: Instant,
 }
 pub fn spawn() -> Result<(Client, JoinHandle<()>)> {
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(crate::recovery::POINTER_QUEUE_CAPACITY);
     let (ready_tx, ready_rx) = mpsc::sync_channel::<std::result::Result<(), String>>(1);
     let client = Client {
         tx,
@@ -152,6 +154,7 @@ pub fn spawn() -> Result<(Client, JoinHandle<()>)> {
         let mut run: Option<Run> = None;
         let mut foreground = HWND::default();
         let mut remainder = (0.0, 0.0);
+        let mut delivered_generation = 0;
         loop {
             let command = if run.is_none() {
                 match rx.recv() {
@@ -161,6 +164,13 @@ pub fn spawn() -> Result<(Client, JoinHandle<()>)> {
             } else {
                 rx.try_recv().ok()
             };
+            let latest_generation = shared.generation.load(Ordering::Acquire);
+            if delivered_generation != latest_generation {
+                delivered_generation = latest_generation;
+                run = None;
+                remainder = (0.0, 0.0);
+                let _ = CancelWaitableTimer(timer);
+            }
             let current_foreground = GetForegroundWindow();
             let changed = foreground != current_foreground;
             if changed {
@@ -178,6 +188,15 @@ pub fn spawn() -> Result<(Client, JoinHandle<()>)> {
                 if generation != shared.generation.load(Ordering::Acquire) {
                     continue;
                 }
+                if let Command::Move(_, _, queued_at, ..) | Command::Start(_, _, queued_at, ..) =
+                    &command
+                    && !crate::recovery::pointer_fresh(queued_at.elapsed())
+                {
+                    if matches!(command, Command::Start(..)) {
+                        shared.active.store(false, Ordering::Release);
+                    }
+                    continue;
+                }
                 if let Command::Move(_, window, ..) | Command::Start(_, window, ..) = &command
                     && *window != foreground.0 as usize
                 {
@@ -193,14 +212,14 @@ pub fn spawn() -> Result<(Client, JoinHandle<()>)> {
                         shared.active.store(false, Ordering::Release);
                         let _ = CancelWaitableTimer(timer);
                     }
-                    Command::Move(_, _, dx, dy) => {
+                    Command::Move(_, _, _, dx, dy) => {
                         if generation == shared.generation.load(Ordering::Acquire)
                             && !deliver(&mut remainder, dx as f64, dy as f64, foreground)
                         {
                             crate::ERRORS.fetch_add(1, Ordering::Relaxed);
                         }
                     }
-                    Command::Start(_, _, motion, decay) => {
+                    Command::Start(_, _, _, motion, decay) => {
                         if changed {
                             continue;
                         }
@@ -277,6 +296,32 @@ pub fn spawn() -> Result<(Client, JoinHandle<()>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bounded_mailbox_never_blocks_input_and_stop_invalidates_full_queue() {
+        let (tx, rx) = mpsc::sync_channel(crate::recovery::POINTER_QUEUE_CAPACITY);
+        let client = Client {
+            tx,
+            generation: Arc::new(AtomicU64::new(0)),
+            active: Arc::new(AtomicBool::new(true)),
+            ticks: Arc::new(AtomicU64::new(0)),
+            max_gap_us: Arc::new(AtomicU64::new(0)),
+            brake_gain: Arc::new(AtomicU64::new(1.0f64.to_bits())),
+        };
+        for _ in 0..crate::recovery::POINTER_QUEUE_CAPACITY {
+            client.move_by(1, 1);
+        }
+        client.move_by(1, 1); // Must return even with no worker receiving.
+        client.stop(); // Stop's mailbox packet cannot fit; generation is authoritative.
+        assert!(!client.active());
+        let generation = client.generation.load(Ordering::Acquire);
+        let packets: Vec<_> = rx.try_iter().collect();
+        assert_eq!(packets.len(), crate::recovery::POINTER_QUEUE_CAPACITY);
+        assert!(
+            packets
+                .into_iter()
+                .all(|c| matches!(c, Command::Move(g, ..) if g != generation))
+        );
+    }
     #[test]
     fn relative_output_keeps_deltas_and_fractional_motion_without_desktop_clamping() {
         let mut remainder = (0.0, 0.0);
